@@ -77,7 +77,7 @@ def nodegroup_grained_metal(nw: NodeWrangler):
 
     multiply_3 = nw.new_node(
         Nodes.Math,
-        input_kwargs={0: multiply_2, 1: 0.010},
+        input_kwargs={0: multiply_2, 1: uniform(0.014, 0.022)},
         attrs={"operation": "MULTIPLY"},
     )
 
@@ -116,7 +116,11 @@ def shader_grained_metal(
 
     displacement = nw.new_node(
         "ShaderNodeDisplacement",
-        input_kwargs={"Height": group.outputs["Displacement"], "Midlevel": 0.0000},
+        input_kwargs={
+            "Height": group.outputs["Displacement"],
+            "Midlevel": 0.0000,
+            "Scale": uniform(0.7, 1.3),
+        },
     )
 
     material_output = nw.new_node(

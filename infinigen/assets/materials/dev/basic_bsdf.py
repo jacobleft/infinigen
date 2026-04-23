@@ -12,12 +12,9 @@ from infinigen.core.nodes.node_wrangler import Nodes
 from infinigen.core.util.color import hsv2rgba
 
 
-def shader_basic_bsdf(nw, hsv=None):
-    if hsv is None:
-        hsv = uniform(0.05, 0.95, 3)
-
+def shader_basic_bsdf(nw):
     color = nw.new_node(Nodes.RGB)
-    color.outputs[0].default_value = hsv2rgba(hsv)
+    color.outputs[0].default_value = hsv2rgba(uniform(0.05, 0.95, 3))
 
     principled_bsdf = nw.new_node(
         Nodes.PrincipledBSDF,
@@ -43,7 +40,7 @@ class BasicBSDF:
     def apply(obj, selection=None, **kwargs):
         surface.add_material(obj, shader_basic_bsdf, reuse=False)
 
-    def generate(self, hsv=None):
-        return surface.shaderfunc_to_material(shader_basic_bsdf, hsv=hsv)
+    def generate(self):
+        return surface.shaderfunc_to_material(shader_basic_bsdf)
 
     __call__ = generate

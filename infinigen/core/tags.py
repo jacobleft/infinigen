@@ -70,6 +70,7 @@ class Semantics(EnumTag):
     Furniture = "furniture"
     FloorMat = "FloorMat"
     WallDecoration = "wall-decoration"
+    Defects = "defects"
     HandheldItem = "handheld-item"
 
     # Furniture functions

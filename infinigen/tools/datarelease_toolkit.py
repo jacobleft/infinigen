@@ -318,7 +318,9 @@ def reorganize_old_framesfolder(frames_old):
         if p.is_symlink():
             p.unlink()
 
-    frames_dest = frames_old.parent / "frames"
+    # Keep organized structure inside frames_old so each room/scene retains its own output.
+    # Previously used frames_old.parent / "frames" which caused all rooms to overwrite the same folder.
+    frames_dest = frames_old
 
     excludes = [
         "version.txt",
@@ -338,6 +340,7 @@ def reorganize_old_framesfolder(frames_old):
         new_path.parent.mkdir(exist_ok=True, parents=True)
         shutil.move(img_path, new_path)
 
+    # Only rmdir frames_old when we moved content to a sibling (legacy behavior); in-place reorganization keeps frames_old.
     if frames_dest != frames_old:
         frames_old.rmdir()
 

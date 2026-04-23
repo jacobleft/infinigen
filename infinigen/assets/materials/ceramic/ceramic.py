@@ -40,16 +40,22 @@ def shader_ceramic(
         },
     )
 
+    noise_disp = nw.new_node(
+        Nodes.NoiseTexture, input_kwargs={"Scale": log_uniform(20, 40)}
+    )
+    musgrave_disp = nw.new_node(
+        Nodes.MusgraveTexture, input_kwargs={"Scale": log_uniform(30, 60)}
+    )
+    disp_height = nw.scalar_add(
+        nw.scalar_multiply(noise_disp.outputs["Fac"], log_uniform(0.003, 0.008)),
+        nw.scalar_multiply(musgrave_disp, log_uniform(0.0015, 0.005)),
+    )
     displacement = nw.new_node(
         "ShaderNodeDisplacement",
         input_kwargs={
-            "Height": nw.scalar_multiply(
-                log_uniform(0.001, 0.005),
-                nw.new_node(
-                    Nodes.NoiseTexture, input_kwargs={"Scale": log_uniform(20, 40)}
-                ),
-            ),
+            "Height": disp_height,
             "Midlevel": 0.0000,
+            "Scale": log_uniform(0.45, 1.1),
         },
     )
 

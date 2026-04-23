@@ -58,12 +58,8 @@ def raycast_sample(min_dist, sensor_coords, pix_it, camera, bvhtree):
 
 
 def bbox_sample(bbox):
-    bbox_min, bbox_max = bbox
-    x = np.random.uniform(bbox_min[0], bbox_max[0])
-    y = np.random.uniform(bbox_min[1], bbox_max[1])
-    z = np.random.uniform(bbox_min[2], bbox_max[2])
+    raise NotImplementedError
 
-    return (x, y, z)
 
 class FloatingObjectPlacement:
     def __init__(
@@ -73,7 +69,6 @@ class FloatingObjectPlacement:
         background_objs: bpy.types.Object | list[bpy.types.Object],
         collision_objs: bpy.types.Object | list[bpy.types.Object],
         bbox=None,
-        indoor_cutoff=None,
     ):
         self.generators = generators
         self.camera = camera
@@ -87,7 +82,6 @@ class FloatingObjectPlacement:
         self.collision_objs = collision_objs
 
         self.bbox = bbox
-        self.indoor_cutoff = indoor_cutoff
 
     def place_objs(
         self,
@@ -118,25 +112,17 @@ class FloatingObjectPlacement:
 
         from infinigen.core.placement.camera import get_sensor_coords
 
-        if raycast:
-            sensor_coords, pix_it = get_sensor_coords(self.camera, sparse=False)
-
+        sensor_coords, pix_it = get_sensor_coords(self.camera, sparse=False)
         num_place = rg(num_objs)
-
-        placed_assets = []
-
         for i in range(num_place):
-            index = np.random.randint(0, len(self.generators))
-            fac = self.generators[index](np.random.randint(1e7))
-
+            fac = np.random.choice(self.generators)(np.random.randint(1e7))
             asset = fac.spawn_asset(0)
             fac.finalize_assets([asset])
             max_dim = max(asset.dimensions.x, asset.dimensions.y, asset.dimensions.z)
 
             if normalize:
                 if max_dim != 0:
-                    norm_size = np.random.uniform(0.5, 1)
-                    normalize_scale = norm_size / max(
+                    normalize_scale = 0.5 / max(
                         asset.dimensions.x, asset.dimensions.y, asset.dimensions.z
                     )
                 else:
@@ -150,7 +136,7 @@ class FloatingObjectPlacement:
                         min_dist, sensor_coords, pix_it, self.camera, room_bvh
                     )
                 else:
-                    point = bbox_sample(self.bbox)
+                    point = bbox_sample()
 
                 if point is None:
                     continue
@@ -178,11 +164,8 @@ class FloatingObjectPlacement:
                     if i == sample_retries - 1:
                         butil.delete(asset)
                 else:
-                    placed_assets.append((asset, index < self.indoor_cutoff))
                     logger.info(
                         f"{self.__class__.__name__} placing object {i}/{num_place}, {asset.name=}"
                     )
                     placed_obj_bvhs.append(bvh)
                     break
-
-        return placed_assets

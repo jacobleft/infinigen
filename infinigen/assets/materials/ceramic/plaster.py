@@ -48,13 +48,26 @@ def shader_plaster(nw: NodeWrangler, plaster_colored, **kwargs):
         nw, difference, [uniform(0.2, 0.3), 1], [back_color, front_color]
     )
 
+    musgrave_disp = nw.new_node(
+        Nodes.MusgraveTexture, input_kwargs={"Scale": uniform(1e3, 2e3)}
+    )
+    noise_disp = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(80, 150),
+            "Detail": log_uniform(8, 16),
+            "Distortion": log_uniform(2, 5),
+        },
+    )
+    disp_height = nw.scalar_add(
+        nw.scalar_multiply(musgrave_disp, log_uniform(0.5, 1.0)),
+        nw.scalar_multiply(noise_disp.outputs["Fac"], log_uniform(0.3, 0.8)),
+    )
     displacement = nw.new_node(
         Nodes.Displacement,
         input_kwargs={
-            "Scale": log_uniform(0.0001, 0.0003),
-            "Height": nw.new_node(
-                Nodes.MusgraveTexture, input_kwargs={"Scale": uniform(1e3, 2e3)}
-            ),
+            "Scale": log_uniform(0.0005, 0.0012),
+            "Height": disp_height,
         },
     )
 

@@ -35,6 +35,7 @@ from infinigen.assets.utils.decorate import (
     read_co,
     read_edge_length,
     read_edges,
+    remove_vertices,
 )
 from infinigen.assets.utils.object import obj2trimesh
 from infinigen.assets.utils.shapes import dissolve_limited
@@ -119,7 +120,7 @@ room_ceiling_fns = defaultdict(
         t.Semantics.Garage: material_assignments.garage_ceiling,
     },
 )
-
+# TODO: add wall art and mirror to the walls
 room_floor_fns = defaultdict(
     lambda: material_assignments.floor,
     {
@@ -134,7 +135,7 @@ room_floor_fns = defaultdict(
         t.Semantics.Warehouse: material_assignments.warehouse_floor,
     },
 )
-
+# TODO: add wall art and mirror to the walls
 room_wall_fns = defaultdict(
     lambda: material_assignments.wall,
     {
@@ -149,53 +150,56 @@ room_wall_fns = defaultdict(
 )
 
 # noinspection PyTypeChecker
-room_wall_alternative_fns = {
-    t.Semantics.LivingRoom: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-    t.Semantics.Bedroom: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-    t.Semantics.Office: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-    t.Semantics.OpenOffice: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-    t.Semantics.FactoryOffice: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-    t.Semantics.BreakRoom: (
-        "weighted_choice",
-        (2, "none"),
-        (1, "half"),
-        *([(v, k) for k, v in material_assignments.wall_plaster]),
-        *([(v, k) for k, v in material_assignments.abstract_art]),
-    ),
-}
-room_wall_alternative_fns = defaultdict(
-    lambda: ("weighted_choice", (2, "none"), (0.5, "half")), room_wall_alternative_fns
-)
+# abstract_art (Art/DarkArt) removed - uses text_texture; walls use plaster only
+# Use "none" only so all sides of wall have same color (no alternative material bands)
+# room_wall_alternative_fns = {
+#     t.Semantics.LivingRoom: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+#     t.Semantics.Bedroom: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+#     t.Semantics.Office: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+#     t.Semantics.OpenOffice: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+#     t.Semantics.FactoryOffice: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+#     t.Semantics.BreakRoom: (
+#         "weighted_choice",
+#         (2, "none"),
+#         (1, "half"),
+#         *([(v, k) for k, v in material_assignments.wall_plaster]),
+#         # *([(v, k) for k, v in material_assignments.abstract_art]),
+#     ),
+# }
+# room_wall_alternative_fns = defaultdict(
+#     lambda: ("weighted_choice", (2, "none"), (0.5, "half")), room_wall_alternative_fns
+# )
+room_wall_alternative_fns = defaultdict(lambda: ("weighted_choice", (1, "none")))
 
 room_no_curtain = {t.Semantics.Garage, t.Semantics.Warehouse}
 
@@ -207,137 +211,140 @@ pillar_rooms = {
 }
 
 
-def room_walls(walls: list[bpy.types.Object], constants: RoomConstants, n_walls=3):
-    wall_fns = list(weighted_sample(room_wall_fns[room_type(r.name)])() for r in walls)
-    logger.debug(
-        f"{room_walls.__name__} adding materials to {len(walls)=}, using {len(wall_fns)=}"
-    )
+# TODO: add wall art and mirror to the walls
+def room_walls(
+    walls: list[bpy.types.Object], constants: RoomConstants, n_walls=3, material_seed=1
+):
+    walls = sorted(walls, key=lambda w: w.name)
+    with FixedSeed(material_seed):
+        wall_fns = list(
+            weighted_sample(room_wall_fns[room_type(r.name)])() for r in walls
+        )
 
-    kwargs = dict(vertical=True, is_ceramic=True, alternating=False, shape="square")
-    for wall_fn in set(wall_fns):
-        shape = np.random.choice(["square", "rectangle", "hexagon"])
-        kwargs = dict(vertical=True, alternating=False, shape=shape)
-        rooms_ = [o for o, w in zip(walls, wall_fns) if w == wall_fn]
-        indices = np.random.randint(0, n_walls, len(rooms_))
-        for i in range(n_walls):
-            rooms__ = [r for r, j in zip(rooms_, indices) if j == i]
-            if wall_fn.__class__.__name__ == "Plaster":
-                for r in rooms__:
-                    unwrap_normal(r, selection=None)
-            if wall_fn.__class__.__name__ == "Brick":
-                kwargs = {}
-            surface.assign_material(rooms__, wall_fn(**kwargs))
-
-    for w in walls:
         logger.debug(
             f"{room_walls.__name__} adding materials to {len(walls)=}, using {len(wall_fns)=}"
         )
-        fn = rg(room_wall_alternative_fns[room_type(w.name)])
-        match fn:
-            case "none":
-                continue
-            case "half":
-                z_thresh = np.min(read_co(w)[:, -1]) + constants.wall_height * uniform(
-                    0.3, 0.6
-                )
-                with butil.ViewportMode(w, "EDIT"):
-                    bpy.ops.mesh.select_all(action="SELECT")
-                    bpy.ops.mesh.bisect(
-                        plane_co=(0, 0, z_thresh + w.location[-1]), plane_no=(0, 0, 1)
+
+        unique_wall_fns = list(dict.fromkeys(wall_fns))
+        kwargs = dict(vertical=True, is_ceramic=True, alternating=False, shape="square")
+        for wall_fn in sorted(unique_wall_fns, key=lambda f: f.__class__.__name__):
+            shape = np.random.choice(["square", "rectangle", "hexagon"])
+            kwargs = dict(vertical=True, alternating=False, shape=shape)
+            rooms_ = [o for o, w in zip(walls, wall_fns) if w == wall_fn]
+            indices = np.random.randint(0, n_walls, len(rooms_))
+            for i in range(n_walls):
+                rooms__ = [r for r, j in zip(rooms_, indices) if j == i]
+                if wall_fn.__class__.__name__ == "Plaster":
+                    for r in rooms__:
+                        unwrap_normal(r, selection=None)
+                if wall_fn.__class__.__name__ in [
+                    "Brick",
+                    "Concrete",
+                    "Plaster",
+                    "Wood",
+                    "Metal",
+                ]:
+                    kwargs = {}
+                surface.assign_material(rooms__, wall_fn(**kwargs))
+
+        for w in sorted(walls, key=lambda w: w.name):
+            logger.debug(
+                f"{room_walls.__name__} adding materials to {len(walls)=}, using {len(wall_fns)=}"
+            )
+            fn = rg(room_wall_alternative_fns[room_type(w.name)])
+            match fn:
+                case "none":
+                    continue
+                case "half":
+                    continue  # disabled: skip half wall
+                case _:
+                    co = read_co(w)
+                    u, v = read_edges(w).T
+                    i = np.argmax(
+                        read_edge_length(w) - 100 * (np.abs(co[u, -1] - co[v, -1]) > 0.1)
                     )
-                write_attr_data(
-                    w,
-                    "alternative",
-                    read_center(w)[:, -1] > z_thresh,
-                    type="INT",
-                    domain="FACE",
-                )
-                plaster_mat_gen = plaster.Plaster()
-                unwrap_normal(w, selection="alternative")
-                surface.assign_material(
-                    w, plaster_mat_gen(**kwargs), selection="alternative"
-                )
-            case _:
-                co = read_co(w)
-                u, v = read_edges(w).T
-                i = np.argmax(
-                    read_edge_length(w) - 100 * (np.abs(co[u, -1] - co[v, -1]) > 0.1)
-                )
-                u_ = co[u[i]]
-                v_ = co[v[i]]
-                non_vertical = np.linalg.norm((co[u] - co[v])[:, :2], axis=-1) > 1e-2
-                directional = (
-                    np.abs(np.cross((co[u] - co[v])[:, :2], (u_ - v_)[np.newaxis, :2]))
-                    < 1e-4
-                )
-                collinear = (
-                    np.abs(np.cross((co[u] - v_)[:, :2], (u_ - v_)[np.newaxis, :2]))
-                    < 1e-4
-                )
-                collinear_ = (
-                    np.abs(np.cross((co[u] - u_)[:, :2], (u_ - v_)[np.newaxis, :2]))
-                    < 1e-4
-                )
-                aligned = non_vertical & directional & collinear & collinear_
-                with butil.ViewportMode(w, "EDIT"):
-                    bm = bmesh.from_edit_mesh(w.data)
-                    bm.faces.ensure_lookup_table()
-                    alternative = np.zeros(len(bm.faces), dtype=int)
-                    for f in bm.faces:
-                        for e in f.edges:
-                            if aligned[e.index]:
-                                alternative[f.index] = 1
-                write_attr_data(
-                    w, "alternative", alternative, type="INT", domain="FACE"
-                )
-                mat_gen = fn()
+                    u_ = co[u[i]]
+                    v_ = co[v[i]]
+                    non_vertical = np.linalg.norm((co[u] - co[v])[:, :2], axis=-1) > 1e-2
+                    directional = (
+                        np.abs(np.cross((co[u] - co[v])[:, :2], (u_ - v_)[np.newaxis, :2]))
+                        < 1e-4
+                    )
+                    collinear = (
+                        np.abs(np.cross((co[u] - v_)[:, :2], (u_ - v_)[np.newaxis, :2]))
+                        < 1e-4
+                    )
+                    collinear_ = (
+                        np.abs(np.cross((co[u] - u_)[:, :2], (u_ - v_)[np.newaxis, :2]))
+                        < 1e-4
+                    )
+                    aligned = non_vertical & directional & collinear & collinear_
+                    with butil.ViewportMode(w, "EDIT"):
+                        bm = bmesh.from_edit_mesh(w.data)
+                        bm.faces.ensure_lookup_table()
+                        alternative = np.zeros(len(bm.faces), dtype=int)
+                        for f in bm.faces:
+                            for e in f.edges:
+                                if aligned[e.index]:
+                                    alternative[f.index] = 1
+                    write_attr_data(
+                        w, "alternative", alternative, type="INT", domain="FACE"
+                    )
+                    mat_gen = fn()
 
-                if mat_gen.__class__.__name__ == "Plaster":
-                    unwrap_normal(w, selection="alternative")
+                    if mat_gen.__class__.__name__ == "Plaster":
+                        unwrap_normal(w, selection="alternative")
 
-                surface.assign_material(
-                    w,
-                    mat_gen(scale=log_uniform(0.5, 2.0), **kwargs),
-                    selection="alternative",
-                )
+                    surface.assign_material(
+                        w,
+                        mat_gen(scale=log_uniform(0.5, 2.0), **kwargs),
+                        selection="alternative",
+                    )
 
 
-def room_ceilings(ceilings):
+# TODO: add wall art and mirror to the walls
+def room_ceilings(ceilings, material_seed=1):
+    ceilings = sorted(ceilings, key=lambda c: c.name)
     logger.debug(f"{room_ceilings.__name__} adding materials to {len(ceilings)=}")
 
-    ceiling_fns = list(
-        weighted_sample(room_ceiling_fns[room_type(r.name)])() for r in ceilings
-    )
-    for ceiling_fn in set(ceiling_fns):
-        rooms_ = [o for o, f in zip(ceilings, ceiling_fns) if f == ceiling_fn]
-        if ceiling_fn.__class__.__name__ == "Plaster":
-            for r in rooms_:
-                unwrap_normal(r, selection=None)
+    with FixedSeed(material_seed):
+        ceiling_fns = list(
+            weighted_sample(room_ceiling_fns[room_type(r.name)])() for r in ceilings
+        )
 
-        surface.assign_material(rooms_, ceiling_fn())
-        # ceiling_fn.apply(rooms_)
-
-
-def room_floors(floors, n_floors=3):
-    floor_material_gens = []
-    for r in floors:
-        gen_class = weighted_sample(room_floor_fns[room_type(r.name)])
-        floor_material_gens.append(gen_class())
-
-    logger.debug(
-        f"{room_floors.__name__} adding materials to {len(floors)=}, using {len(floor_material_gens)=}"
-    )
-
-    for floor_fn in set(floor_material_gens):
-        rooms_ = [o for o, f in zip(floors, floor_material_gens) if f == floor_fn]
-        indices = np.random.randint(0, n_floors, len(rooms_))
-        for i in range(n_floors):
-            rooms__ = [r for r, j in zip(rooms_, indices) if j == i]
-            if floor_fn.__class__.__name__ == "Plaster":
-                for r in rooms__:
+        unique_ceiling_fns = list(dict.fromkeys(ceiling_fns))
+        for ceiling_fn in sorted(unique_ceiling_fns, key=lambda f: f.__class__.__name__):
+            rooms_ = [o for o, f in zip(ceilings, ceiling_fns) if f == ceiling_fn]
+            if ceiling_fn.__class__.__name__ == "Plaster":
+                for r in rooms_:
                     unwrap_normal(r, selection=None)
-            surface.assign_material(rooms__, floor_fn())
-            # floor_fn.apply(rooms__)
+
+            surface.assign_material(rooms_, ceiling_fn())
+
+
+@gin.configurable
+def room_floors(floors, n_floors=3, material_seed=1):
+    floors = sorted(floors, key=lambda f: f.name)
+    with FixedSeed(material_seed):
+        floor_material_gens = []
+        for r in floors:
+            gen_class = weighted_sample(room_floor_fns[room_type(r.name)])()
+            floor_material_gens.append(gen_class)
+
+        logger.debug(
+            f"{room_floors.__name__} adding materials to {len(floors)=}, using {len(floor_material_gens)=}"
+        )
+
+        unique_floor_fns = list(dict.fromkeys(floor_material_gens))
+        for floor_fn in sorted(unique_floor_fns, key=lambda f: f.__class__.__name__):
+            rooms_ = [o for o, f in zip(floors, floor_material_gens) if f == floor_fn]
+            indices = np.random.randint(0, n_floors, len(rooms_))
+            for i in range(n_floors):
+                rooms__ = [r for r, j in zip(rooms_, indices) if j == i]
+                if floor_fn.__class__.__name__ == "Plaster":
+                    for r in rooms__:
+                        unwrap_normal(r, selection=None)
+                surface.assign_material(rooms__, floor_fn())
 
 
 @gin.configurable
@@ -348,6 +355,7 @@ def populate_doors(
     door_chance=1,
     casing_chance=0.0,
     all_open=False,
+    all_closed=False,
 ):
     factories = [
         random_door_factory()(np.random.randint(1e7), constants=constants)
@@ -369,7 +377,9 @@ def populate_doors(
         for j in np.nonzero(indices == i)[0]:
             if uniform() > door_chance:
                 continue
-            if all_open:
+            if all_closed:
+                rot_z = uniform(0, 0.05)  # Completely closed
+            elif all_open:
                 rot_z = uniform(0.93, 1.93)
             else:
                 rot_p = uniform()

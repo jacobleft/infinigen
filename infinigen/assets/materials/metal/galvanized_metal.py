@@ -115,9 +115,28 @@ def shader_galvanized_metal(
         },
     )
 
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(100, 200),
+            "Detail": uniform(6, 10),
+            "Distortion": uniform(0.5, 2),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.003, 0.008)),
+            "Scale": uniform(0.4, 0.9),
+        },
+    )
+
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": group},
+        input_kwargs={
+            "Surface": group.outputs["BSDF"],
+            "Displacement": displacement,
+        },
         attrs={"is_active_output": True},
     )
 

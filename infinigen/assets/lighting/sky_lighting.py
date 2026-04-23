@@ -96,6 +96,31 @@ def add_lighting(cam=None):
 
 
 @gin.configurable
+def add_multi_directional_sun_lighting(
+    n_directions: int = 2,
+    elevation_deg: float = 40.0,
+    energy_per_sun: float = 2.0,
+):
+    """
+    Add sun lamps from multiple directions so light shines through all sides
+    of the apartment (e.g., through windows on different walls).
+    """
+    elevation_rad = math.radians(elevation_deg)
+    for i in range(n_directions):
+        azimuth_rad = 2 * math.pi * i / n_directions
+        # Sun lamp default points -Z (light travels in -Z). We need light from above, pointing DOWN.
+        # rot_x = pi/2 - elevation: (0,0,-1) -> (0, cos(el), -sin(el)) so Z is negative (downward).
+        # rot_z = azimuth rotates the horizontal component to the correct compass direction.
+        rot_x = math.pi / 2 - elevation_rad
+        rot_z = azimuth_rad
+        bpy.ops.object.light_add(type="SUN", location=(0, 0, 0))
+        sun = bpy.context.active_object
+        sun.name = f"SunMulti_{i}"
+        sun.rotation_euler = (rot_x, 0, rot_z)
+        sun.data.energy = energy_per_sun
+
+
+@gin.configurable
 def add_camera_based_lighting(
     energy=("log_uniform", 200, 500), spot_size=("uniform", np.pi / 6, np.pi / 4)
 ):

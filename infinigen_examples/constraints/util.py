@@ -63,10 +63,13 @@ leftright = {
 }
 
 on_floor = cl.StableAgainst(bottom, floortags, margin=0.01)
-flush_wall = cl.StableAgainst(back, walltags, margin=0.02)
+flush_wall = cl.StableAgainst(back, walltags, margin=0.02)  # For wall decorations
+flush_wall_defect = cl.StableAgainst(
+    back, walltags, margin=0.001
+)  # Nearly flush (1mm) for defects only
 against_wall = cl.StableAgainst(back, walltags, margin=0.07)
 spaced_wall = cl.StableAgainst(back, walltags, margin=0.8)
-hanging = cl.StableAgainst(top, ceilingtags, margin=0.05)
+hanging = cl.StableAgainst(top, ceilingtags, margin=0.005)  # 1mm from ceiling - flush
 side_against_wall = cl.StableAgainst(side, walltags, margin=0.05)
 
 front_coplanar_front = cl.CoPlanar(front, front, margin=0.05, rev_normal=True)

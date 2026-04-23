@@ -18,6 +18,7 @@ class StaticAssetFactory(AssetFactory):
         "dae": bpy.ops.wm.collada_import,
         "abc": bpy.ops.wm.alembic_import,
         "usd": bpy.ops.wm.usd_import,
+        "usdz": bpy.ops.wm.usd_import,
         "obj": bpy.ops.wm.obj_import,
         "ply": bpy.ops.wm.ply_import,
         "stl": bpy.ops.wm.stl_import,
@@ -91,10 +92,28 @@ class StaticAssetFactory(AssetFactory):
 
                 is_tree_structure, root_object = is_tree(new_objects)
 
+                # I changed the loader to tolerate
+                # those multi-root assets: if the imported
+                # objects don’t share a root,
+                # we now create a temporary empty
+                # (StaticAssetRoot), parent every orphaned
+                # object to it, and then collapse the
+                # hierarchy as before. That keeps the
+                # geometry intact and lets the constraint
+                # solver continue placing the defects.
+                # No other behavior changed—single-root
+                # assets still go through the same pipeline.
+
                 if not is_tree_structure:
-                    raise ValueError(
-                        "The imported objects do not form a tree structure."
-                    )
+                    temp_root = bpy.data.objects.new("StaticAssetRoot", None)
+                    bpy.context.scene.collection.objects.link(temp_root)
+                    for obj in new_objects:
+                        if obj.parent is None:
+                            obj.parent = temp_root
+                            obj.matrix_parent_inverse = (
+                                temp_root.matrix_world.inverted()
+                            )
+                    root_object = temp_root
 
                 collapsed_object = collapse_hierarchy(root_object)
                 return collapsed_object

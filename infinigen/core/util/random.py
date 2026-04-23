@@ -218,6 +218,7 @@ def random_color(brightness_lim=1):
     )
 
 
+# MAIN SEED: weighted_sample
 def weighted_sample(reg):
     classes, weights = zip(*reg)
     weights = np.array(weights)

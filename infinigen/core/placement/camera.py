@@ -131,7 +131,12 @@ def get_id(camera: bpy.types.Object):
 def spawn_camera_rigs(
     camera_rig_config,
     n_camera_rigs,
+    start_index: int = 0,
 ) -> list[bpy.types.Object]:
+    """Spawn camera rig empties ``camrig.{i}`` with child cameras ``camera_i_j``.
+
+    Use ``start_index`` to append rigs after existing ones (e.g. defect-focus extras).
+    """
     rigs_col = butil.get_collection("camera_rigs")
     cams_col = butil.get_collection("cameras")
 
@@ -150,7 +155,15 @@ def spawn_camera_rigs(
 
         return rig_parent
 
-    return [spawn_rig(i) for i in range(n_camera_rigs)]
+    return [
+        spawn_rig(i) for i in range(start_index, start_index + n_camera_rigs)
+    ]
+
+
+@gin.configurable
+def add_defect_focus(enabled: bool = False):
+    """If True, spawn one extra camera rig per defect after the main batch (see generate_indoors)."""
+    return enabled
 
 
 def get_camera_rigs() -> list[bpy.types.Object]:
@@ -517,6 +530,119 @@ def compute_base_views(
     return views[:n_views]
 
 
+@gin.configurable
+def pose_defect_cameras(
+    cam_rigs: list[bpy.types.Object],
+    defect_objs: list[bpy.types.Object],
+    scene_bvh: BVHTree,
+    distance: float = 1.4,
+    focal_length: float = 40,
+    height_jitter: float = 0.0,
+    horizontal_jitter: float = 0.0,
+    angle_noise_deg: float = 0.0,
+    max_retries: int = 50,
+    one_to_one: bool = False,
+):
+    """Place each camera rig so it faces a defect from a close-up standpoint.
+
+    Camera looks along -Z at the defect center (track quaternion), with no extra
+    rotation noise by default (perpendicular / head-on view).
+
+    If ``one_to_one`` is True, rigs are paired with defects sorted by object name
+    (same count expected). Otherwise defects are shuffled and assigned round-robin.
+    Optional jitter uses ``horizontal_jitter`` and ``height_jitter`` (0 = none).
+    """
+    if not defect_objs:
+        logger.warning("pose_defect_cameras: no defect objects found, skipping")
+        return
+
+    rng = np.random.default_rng()
+    if one_to_one:
+        targets_ordered = sorted(defect_objs, key=lambda o: o.name)
+        n_pair = min(len(cam_rigs), len(targets_ordered))
+        if len(cam_rigs) != len(targets_ordered):
+            logger.warning(
+                "pose_defect_cameras: one_to_one rig count %s != defect count %s, "
+                "pairing first %s",
+                len(cam_rigs),
+                len(targets_ordered),
+                n_pair,
+            )
+    else:
+        shuffled = list(defect_objs)
+        rng.shuffle(shuffled)
+        targets_ordered = None
+
+    for idx, cam_rig in enumerate(cam_rigs):
+        if one_to_one:
+            if idx >= n_pair:
+                break
+            target = targets_ordered[idx]
+        else:
+            target = shuffled[idx % len(shuffled)]
+        target_loc = Vector(target.matrix_world.translation)
+
+        # The back face (-X) is flush against the wall, so the room-facing
+        # direction is local +X.
+        local_normal = Vector((1, 0, 0))
+        world_normal = (
+            target.matrix_world.to_3x3() @ local_normal
+        ).normalized()
+
+        placed = False
+        for attempt in range(max_retries):
+            jitter = Vector(
+                (
+                    rng.uniform(-horizontal_jitter, horizontal_jitter),
+                    rng.uniform(-horizontal_jitter, horizontal_jitter),
+                    rng.uniform(-height_jitter, height_jitter),
+                )
+            )
+            cam_loc = target_loc + world_normal * distance + jitter
+
+            # Verify line-of-sight: cast from camera toward defect
+            direction = (target_loc - cam_loc).normalized()
+            hit, hit_loc, _, hit_dist = scene_bvh.ray_cast(cam_loc, direction)
+
+            dist_to_target = (target_loc - cam_loc).length
+            if hit is not None and hit_dist < dist_to_target * 0.9:
+                continue
+
+            placed = True
+            break
+
+        if not placed:
+            logger.warning(
+                f"pose_defect_cameras: could not find clear view for rig "
+                f"{cam_rig.name} -> {target.name}, using best-effort position"
+            )
+            cam_loc = target_loc + world_normal * distance
+
+        dist_to_target = (target_loc - cam_loc).length
+
+        # Orient rig to look at the defect centre (no extra euler noise by default)
+        direction = target_loc - cam_loc
+        rot_quat = direction.to_track_quat("-Z", "Y")
+        rot_euler = rot_quat.to_euler("XYZ")
+
+        if angle_noise_deg > 0:
+            noise_rad = np.deg2rad(angle_noise_deg)
+            rot_euler.x += rng.uniform(-noise_rad, noise_rad)
+            rot_euler.y += rng.uniform(-noise_rad, noise_rad)
+            rot_euler.z += rng.uniform(-noise_rad, noise_rad)
+
+        cam_rig.location = cam_loc
+        cam_rig.rotation_euler = rot_euler
+
+        for cam in cam_rig.children:
+            cam.data.lens = focal_length
+
+        logger.info(
+            f"Defect camera {cam_rig.name} -> {target.name} "
+            f"at dist={dist_to_target:.2f}m"
+        )
+
+
 def build_bvh_and_attrs(objs, tags_queries):
     dup_objs = []
     for obj in objs:
@@ -713,11 +839,12 @@ def configure_cameras(
     else:
         center_coordinate = None
 
+    n = len(cam_rigs) if n_views is None else n_views
     views = None
     for cam_rig in cam_rigs:
         views = compute_base_views(
             cam_rig,
-            n_views=5,
+            n_views=n,
             location_sample=location_sample,
             center_coordinate=center_coordinate,
             radius=mvs_radius,

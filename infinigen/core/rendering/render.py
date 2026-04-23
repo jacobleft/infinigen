@@ -280,9 +280,9 @@ def _replace_materials_with_flat_shading(obj: bpy.types.Object):
         except Exception as e:
             mat = obj.material_slots[i].material
             raise RuntimeError(
-                f"Error in blendergt flat_shading {_replace_shader_with_randcolor.__name__} for "
+                f"Error in blendergt flat_shading for "
                 f"{obj.name} with material slot {i} {mat.name}: {e}"
-            )
+            ) from e
 
 
 def global_flat_shading():
@@ -568,6 +568,9 @@ def render_image(
                 suffix = get_suffix(dict(frame=frame, **indices))
                 postprocess_blendergt_outputs(frames_folder, suffix, camera)
             else:
+                # Adjust camera sensor to match current render resolution (e.g. 1024x1024)
+                # when scene was created with different aspect (e.g. 1280x720)
+                cam_util.adjust_camera_sensor(camera)
                 cam_util.save_camera_parameters(
                     camera,
                     output_folder=frames_folder,

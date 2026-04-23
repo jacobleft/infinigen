@@ -56,19 +56,26 @@ def shader_brick(nw: NodeWrangler, height=None, **kwargs):
         [(0, 0.5), (1, 1.0)],
     )
 
+    musgrave_disp = nw.new_node(Nodes.MusgraveTexture, input_kwargs={"Scale": 50})
+    noise_disp = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(60, 100),
+            "Detail": uniform(8, 14),
+            "Distortion": uniform(1, 4),
+        },
+    )
     offset = nw.scalar_add(
-        nw.scalar_multiply(color, uniform(0.01, 0.04)),
-        nw.scalar_multiply(
-            nw.new_node(Nodes.MusgraveTexture, [uv_map], input_kwargs={"Scale": 50}),
-            uniform(0.0, 0.01),
-        ),
+        nw.scalar_multiply(color, uniform(0.02, 0.06)),
+        nw.scalar_multiply(musgrave_disp, uniform(0.01, 0.02)),
+        nw.scalar_multiply(noise_disp.outputs["Fac"], uniform(0.01, 0.025)),
     )
     principled_bsdf = nw.new_node(
         Nodes.PrincipledBSDF,
         input_kwargs={"Roughness": roughness, "Base Color": color},
     )
     displacement = nw.new_node(
-        Nodes.Displacement, input_kwargs={"Height": offset, "Scale": 0.05}
+        Nodes.Displacement, input_kwargs={"Height": offset, "Scale": 0.12}
     )
     nw.new_node(
         Nodes.MaterialOutput,

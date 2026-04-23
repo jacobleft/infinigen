@@ -34,9 +34,24 @@ def shader_shelves_white(nw: NodeWrangler, **kwargs):
             "Roughness": kwargs.get("roughness", 0.9),
         },
     )
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(80, 140),
+            "Detail": uniform(6, 10),
+            "Distortion": uniform(0.5, 2),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.002, 0.005)),
+            "Scale": uniform(0.3, 0.6),
+        },
+    )
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": principled_bsdf},
+        input_kwargs={"Surface": principled_bsdf, "Displacement": displacement},
         attrs={"is_active_output": True},
     )
 

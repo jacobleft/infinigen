@@ -141,7 +141,11 @@ def shader_hammered_metal(
 
     displacement = nw.new_node(
         "ShaderNodeDisplacement",
-        input_kwargs={"Height": group.outputs["Displacement"], "Midlevel": 0.0000},
+        input_kwargs={
+            "Height": group.outputs["Displacement"],
+            "Midlevel": 0.0000,
+            "Scale": uniform(0.8, 1.5),
+        },
     )
 
     material_output = nw.new_node(

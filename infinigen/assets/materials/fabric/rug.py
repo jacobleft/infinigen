@@ -76,7 +76,7 @@ class Rug:
     shader = shader_rug
 
     def generate(self):
-        strength = log_uniform(0.01, 0.02)
+        strength = log_uniform(0.014, 0.028)
         return surface.shaderfunc_to_material(shader_rug, strength=strength)
 
     __call__ = generate

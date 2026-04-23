@@ -215,6 +215,7 @@ def apply_skirtingboard(
                 plastic_rough.shader_rough_plastic,
                 base_color=color,
                 roughness=roughness,
+                displacement_scale=uniform(2.5, 4.0),
             ),
         },
     )

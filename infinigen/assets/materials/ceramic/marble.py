@@ -4,6 +4,8 @@
 # Authors: Yiming Zuo
 # Acknowledgement: This file draws inspiration https://www.youtube.com/watch?v=wTzk9T06gdw by Ryan King Arts
 
+from numpy.random import uniform
+
 from infinigen.assets.materials.utils import common
 from infinigen.core import surface
 from infinigen.core.nodes.node_wrangler import Nodes, NodeWrangler
@@ -133,7 +135,11 @@ def shader_marble(nw: NodeWrangler, **kwargs):
 
     displacement = nw.new_node(
         Nodes.Displacement,
-        input_kwargs={"Height": multiply, "Midlevel": 0.0, "Scale": 0.02},
+        input_kwargs={
+            "Height": multiply,
+            "Midlevel": 0.0,
+            "Scale": uniform(0.03, 0.055),
+        },
     )
 
     principled_bsdf = nw.new_node(

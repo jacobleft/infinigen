@@ -20,6 +20,8 @@ import numpy as np
 
 from infinigen import repo_root
 from infinigen.assets import lighting
+# Boolean/cutter logic (commented out - not needed):
+# from infinigen.assets.spalling_plane import apply_spalling_plug_boolean_to_walls
 from infinigen.assets.materials.dev import InvisibleToCamera
 from infinigen.assets.objects.wall_decorations.skirting_board import make_skirting_board
 from infinigen.assets.placement.floating_objects import FloatingObjectPlacement
@@ -62,6 +64,25 @@ from . import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@gin.configurable
+def defect_camera_fraction(
+    n_total: int,
+    n_defects: int,
+    fraction: float = 0.0,
+):
+    """Return how many of the *main* camera rigs are reserved for defect-only posing.
+
+    Default ``0``: all main rigs use the normal indoor trajectory logic. Use
+    ``camera.add_defect_focus`` to add *extra* per-defect rigs instead of splitting
+    the main batch.
+    """
+    if n_defects == 0 or fraction <= 0:
+        return 0
+    n_defect = max(1, int(round(n_total * fraction)))
+    n_defect = min(n_defect, n_defects, n_total - 1)
+    return n_defect
 
 
 def default_greedy_stages():
@@ -133,7 +154,12 @@ all_vars = [cu.variable_room, cu.variable_obj]
 
 
 @gin.configurable
-def compose_indoors(output_folder: Path, scene_seed: int, **overrides):
+def compose_indoors(
+    output_folder: Path,
+    scene_seed: int,
+    camera_selection_tags_ratio=None,
+    **overrides,
+):
     p = pipeline.RandomStageExecutor(scene_seed, output_folder, overrides)
 
     logger.debug(overrides)
@@ -230,55 +256,7 @@ def compose_indoors(output_folder: Path, scene_seed: int, **overrides):
     house_bbox = (np.min(house_bbox, axis=0), np.max(house_bbox, axis=0))
 
     camera_rigs = placement.camera.spawn_camera_rigs()
-
-    nonroom_objs = [
-        o.obj for o in state.objs.values() if t.Semantics.Room not in o.tags
-    ]
-    room_objs = [o.obj for o in state.objs.values() if t.Semantics.Room in o.tags]
-    scene_objs = solved_rooms + nonroom_objs
-
-    def pose_cameras():
-        scene_preprocessed = placement.camera.camera_selection_preprocessing(
-            terrain=None, scene_objs=scene_objs
-        )
-
-        solved_floor_surface = butil.join_objects(
-            [
-                tagging.extract_tagged_faces(o, {t.Subpart.SupportSurface})
-                for o in solved_rooms
-            ]
-        )
-
-        poses = cam_traj.compute_poses(
-            cam_rigs=camera_rigs,
-            scene_preprocessed=scene_preprocessed,
-            init_surfaces=solved_floor_surface,
-            nonroom_objs=nonroom_objs,
-        )
-
-        butil.delete(solved_floor_surface)
-
-        return poses, scene_preprocessed
-
-    poses, scene_preprocessed = p.run_stage(
-        "pose_cameras", pose_cameras, use_chance=False, default=(None, None)
-    )
-
-    def animate_cameras():
-        cam_traj.animate_trajectories(
-            cam_rigs=camera_rigs,
-            base_views=poses,
-            scene_preprocessed=scene_preprocessed,
-            obj_groups=[room_objs, nonroom_objs],
-        )
-
-        frames_folder = output_folder.parent / "frames"
-        animated_cams = [cam for cam in camera_rigs if cam.animation_data is not None]
-        save_imu_tum_files(frames_folder / "imu_tum", animated_cams)
-
-    p.run_stage(
-        "animate_cameras", animate_cameras, use_chance=False, prereq="pose_cameras"
-    )
+    n_primary_camera_rigs = len(camera_rigs)
 
     p.run_stage(
         "populate_intermediate_pholders",
@@ -306,6 +284,106 @@ def compose_indoors(output_folder: Path, scene_seed: int, **overrides):
 
     p.run_stage(
         "populate_assets", populate.populate_state_placeholders, state, use_chance=False
+    )
+
+    nonroom_objs = [
+        o.obj for o in state.objs.values() if t.Semantics.Room not in o.tags
+    ]
+    room_objs = [o.obj for o in state.objs.values() if t.Semantics.Room in o.tags]
+    scene_objs = solved_rooms + nonroom_objs
+
+    defect_objs = [
+        o.obj for o in state.objs.values()
+        if t.Semantics.Defects in o.tags
+    ]
+
+    n_total = len(camera_rigs)
+    n_defect_rigs_from_split = defect_camera_fraction(n_total, len(defect_objs))
+    n_native = n_total - n_defect_rigs_from_split
+    native_rigs = camera_rigs[:n_native]
+    defect_rigs_split = camera_rigs[n_native:]
+
+    n_rigs_before_defect_extras = len(camera_rigs)
+    if placement.camera.add_defect_focus() and defect_objs:
+        extra = placement.camera.spawn_camera_rigs(
+            n_camera_rigs=len(defect_objs),
+            start_index=len(camera_rigs),
+        )
+        camera_rigs = list(camera_rigs) + extra
+        logger.info(
+            "Added %s defect-focus camera rig(s) (camrig.%s..camrig.%s)",
+            len(extra),
+            n_rigs_before_defect_extras,
+            len(camera_rigs) - 1,
+        )
+
+    if defect_rigs_split:
+        logger.info(
+            f"Camera split (legacy fraction): {n_native} native + "
+            f"{n_defect_rigs_from_split} defect-focus "
+            f"({len(defect_objs)} defects in scene)"
+        )
+
+    def pose_cameras():
+        scene_preprocessed = placement.camera.camera_selection_preprocessing(
+            terrain=None,
+            scene_objs=scene_objs,
+            tags_ratio=camera_selection_tags_ratio,
+        )
+
+        solved_floor_surface = butil.join_objects(
+            [
+                tagging.extract_tagged_faces(o, {t.Subpart.SupportSurface})
+                for o in solved_rooms
+            ]
+        )
+
+        poses = cam_traj.compute_poses(
+            cam_rigs=native_rigs if native_rigs else camera_rigs[:n_primary_camera_rigs],
+            scene_preprocessed=scene_preprocessed,
+            init_surfaces=solved_floor_surface,
+            nonroom_objs=nonroom_objs,
+        )
+
+        butil.delete(solved_floor_surface)
+
+        if defect_rigs_split and defect_objs:
+            placement.camera.pose_defect_cameras(
+                cam_rigs=defect_rigs_split,
+                defect_objs=defect_objs,
+                scene_bvh=scene_preprocessed["scene_bvh"],
+            )
+
+        extra_defect_rigs = camera_rigs[n_rigs_before_defect_extras:]
+        if extra_defect_rigs and defect_objs:
+            placement.camera.pose_defect_cameras(
+                cam_rigs=extra_defect_rigs,
+                defect_objs=defect_objs,
+                scene_bvh=scene_preprocessed["scene_bvh"],
+                one_to_one=True,
+            )
+
+        return poses, scene_preprocessed
+
+    poses, scene_preprocessed = p.run_stage(
+        "pose_cameras", pose_cameras, use_chance=False, default=(None, None)
+    )
+
+    def animate_cameras():
+        rigs_to_animate = native_rigs if native_rigs else camera_rigs[:n_primary_camera_rigs]
+        cam_traj.animate_trajectories(
+            cam_rigs=rigs_to_animate,
+            base_views=poses,
+            scene_preprocessed=scene_preprocessed,
+            obj_groups=[room_objs, nonroom_objs],
+        )
+
+        frames_folder = output_folder.parent / "frames"
+        animated_cams = [cam for cam in camera_rigs if cam.animation_data is not None]
+        save_imu_tum_files(frames_folder / "imu_tum", animated_cams)
+
+    p.run_stage(
+        "animate_cameras", animate_cameras, use_chance=False, prereq="pose_cameras"
     )
 
     def place_floating():
@@ -391,21 +469,43 @@ def compose_indoors(output_folder: Path, scene_seed: int, **overrides):
 
     p.run_stage(
         "room_walls",
-        room_dec.room_walls,
-        rooms_split["wall"].objects,
-        constants,
+        lambda: room_dec.room_walls(
+            rooms_split["wall"].objects,
+            constants,
+            material_seed=overrides.get("material_seed", scene_seed + 1000),
+        ),
         use_chance=False,
     )
+    def finalize_paint_bubbles():
+        wall_by_name = {w.name: w for w in rooms_split["wall"].objects}
+        for gen, obj in populate.deferred_wall_bubble_finalize:
+            gen.finalize_assets([obj], state=state, wall_by_name=wall_by_name)
+        populate.deferred_wall_bubble_finalize.clear()
+
+    p.run_stage("paint_bubble_materials", finalize_paint_bubbles, prereq="room_walls", use_chance=False)
+    # Boolean/cutter logic (commented out - not needed):
+    # p.run_stage(
+    #     "spalling_plug_boolean",
+    #     lambda: apply_spalling_plug_boolean_to_walls(
+    #         list(rooms_split["wall"].objects), state=state
+    #     ),
+    #     prereq="room_walls",
+    #     use_chance=False,
+    # )
     p.run_stage(
         "room_floors",
-        room_dec.room_floors,
-        rooms_split["floor"].objects,
+        lambda: room_dec.room_floors(
+            rooms_split["floor"].objects,
+            material_seed=overrides.get("material_seed", scene_seed + 2000),
+        ),
         use_chance=False,
     )
     p.run_stage(
         "room_ceilings",
-        room_dec.room_ceilings,
-        rooms_split["ceiling"].objects,
+        lambda: room_dec.room_ceilings(
+            rooms_split["ceiling"].objects,
+            material_seed=overrides.get("material_seed", scene_seed + 3000),
+        ),
         use_chance=False,
     )
 
@@ -419,6 +519,13 @@ def compose_indoors(output_folder: Path, scene_seed: int, **overrides):
                 butil.delete(o)
 
     p.run_stage("lights_off", turn_off_lights)
+
+    # Add sun lamps from all sides (after lights_off so they are not deleted)
+    p.run_stage(
+        "multi_directional_sun",
+        lighting.sky_lighting.add_multi_directional_sun_lighting,
+        use_chance=False,
+    )
 
     def invisible_room_ceilings():
         invisible_to_camera = InvisibleToCamera()

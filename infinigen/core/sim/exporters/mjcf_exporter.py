@@ -11,7 +11,7 @@ import xml.dom.minidom
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List
 from xml.dom.minidom import parseString
 
 import bmesh
@@ -21,12 +21,7 @@ import numpy as np
 
 import infinigen.core.sim.exporters.utils as exputils
 from infinigen.core import surface
-from infinigen.core.sim.exporters.base import (
-    JointType,
-    PathItem,
-    RigidBody,
-    SimBuilder,
-)
+from infinigen.core.sim.exporters.base import JointType, PathItem, RigidBody, SimBuilder
 from infinigen.core.sim.kinematic_node import (
     KinematicNode,
 )
@@ -48,10 +43,6 @@ class MJCFBuilder(SimBuilder):
         self.asset_freq = defaultdict(int)
         self.joint_freq = defaultdict(int)
         self.joint_map = dict()
-        self.joint_to_coord_frame = dict()
-
-        self.post_processing_collision_info = defaultdict(dict)
-        self.exclude_links = set()
 
         self.link_count = 0
 
@@ -69,8 +60,8 @@ class MJCFBuilder(SimBuilder):
         mujoco = create_element("mujoco")
 
         # adding compiler attributes
-        self.compiler = create_element("compiler", angle="radian", meshdir="assets")
-        mujoco.append(self.compiler)
+        compiler = create_element("compiler", angle="radian", meshdir="assets")
+        mujoco.append(compiler)
 
         # creating general defaults
         default = create_element("default")
@@ -101,12 +92,8 @@ class MJCFBuilder(SimBuilder):
     ):
         super().build(blend_obj, metadata)
 
-        if not visual_only:
-            self.compiler.set("inertiagrouprange", "0 0")
-
         # construct a skeleton for the rigid body
         root, _ = self._construct_rigid_body_skeleton(kinematic_root)
-        root = self._wrap_in_body(root)
         self._simplify_skeleton(root)
 
         asset_body, _ = self._populate_mjcf(
@@ -126,8 +113,6 @@ class MJCFBuilder(SimBuilder):
         image_res: int = 512,
     ):
         """Populates the mjcf with assets and joints."""
-
-        # create the link element
         link_name = f"link_{self.link_count}"
         link = create_element("body", name=link_name)
         self.link_count += 1
@@ -136,22 +121,17 @@ class MJCFBuilder(SimBuilder):
         visgeom_refs = []
         colgeom_refs = []
         assets = []
-        all_attribs_root = [at.attribs for at in root.assets]
         for asset in root.assets:
             visgeom, colgeoms, asset = self._add_mesh(
                 asset.attribs, link, visual_only, image_res
             )
-            if asset:
-                visgeom_refs.append(visgeom)
-                colgeom_refs.append(colgeoms)
-                assets.append(asset)
+            visgeom_refs.append(visgeom)
+            colgeom_refs.append(colgeoms)
+            assets.append(asset)
 
         aabb_center = exputils.get_aabb_center(assets)
-
-        # set the link pos relative to the parent line
         link.set("pos", exputils.array_to_string(aabb_center - pos_offset))
 
-        # set the position offsets for geometries
         for visgeom, colgeoms, asset in zip(visgeom_refs, colgeom_refs, assets):
             geom_center = exputils.get_aabb_center(asset)
             offset = geom_center - aabb_center
@@ -159,36 +139,19 @@ class MJCFBuilder(SimBuilder):
             for colgeom in colgeoms:
                 colgeom.set("pos", exputils.array_to_string(offset))
 
-                # add information for post processing
-                self.post_processing_collision_info[link_name][colgeom.get("name")] = {
-                    "offset": geom_center,
-                    "path": self.asset.find(f"mesh[@name='{colgeom.get('mesh')}']").get(
-                        "file"
-                    ),
-                }
-
         # add joints to the body if they exist
         if joint_nodes:
             for node in joint_nodes:
                 joint_name = self.metadata[node.idn]["joint label"]
-                unique_joint_idx = self.joint_freq[joint_name]
-                unique_joint_name = f"{joint_name}_{unique_joint_idx}"
+                unique_joint_name = f"{joint_name}_{self.joint_freq[joint_name]}"
                 self.joint_freq[joint_name] += 1
                 joint_type = "hinge" if node.joint_type == JointType.HINGE else "slide"
-
-                coord_frame = exputils.get_coord_frame(
-                    self.blend_obj, node.idn, unique_joint_idx, aabb_center
-                )
-
-                # store the coordinate frame for the unique joint
-                self.joint_to_coord_frame[unique_joint_name] = coord_frame
-
                 joint = create_element(
                     "joint",
                     name=unique_joint_name,
                     type=joint_type,
                     pos="0 0 0",
-                    axis="0 0 0",
+                    axis="0 0 1",
                 )
                 self.joint_map[unique_joint_name] = node.idn
                 link.append(joint)
@@ -207,7 +170,6 @@ class MJCFBuilder(SimBuilder):
             self.contact.append(
                 create_element("exclude", body1=link_name, body2=child_name)
             )
-            self.exclude_links.add((link_name, child_name))
 
         return link, link_name
 
@@ -217,31 +179,14 @@ class MJCFBuilder(SimBuilder):
         body: ET.Element,
         visual_only: bool,
         image_res: int,
-        zaxis: np.array = np.array([0, 0, 1]),
     ):
-        attribs_tuple = exputils.attribs_to_tuples(attribs)
-        extra_attribs = [("axis_group", 0)]
-        asset = exputils.get_geometry_given_attribs(
-            self.blend_obj, attribs_tuple, extra_attribs=extra_attribs
-        )
-        if exputils.is_2d(asset):
-            return None, None, None
-        labels = self._get_labels(asset)
+        asset = self._get_geometry(attribs)
 
+        labels = self._get_labels(asset)
         if len(labels) == 0:
             asset_name = "geom"
         else:
-            # Check for case where some have equal because meta-meta-joint
-            labels_w_counts = []
-            for lab in labels:
-                vert = sum(surface.read_attr_data(self.blend_obj, lab))
-                labels_w_counts.append((lab, vert))
-            min_count = min(labels_w_counts, key=lambda x: x[1])[1]
-            min_labels = [
-                label for label, count in labels_w_counts if count == min_count
-            ]
-            asset_name = min_labels[0]
-
+            asset_name = "_".join(list(labels))
         unique_name = f"{asset_name}_{self.asset_freq[asset_name]}"
         self.asset_freq[asset_name] += 1
 
@@ -254,7 +199,6 @@ class MJCFBuilder(SimBuilder):
             translation=-geometry_center,
             name=unique_name,
             visual_only=visual_only,
-            zaxis=zaxis,
         )
 
         mesh_temp = asset.to_mesh()
@@ -362,23 +306,39 @@ class MJCFBuilder(SimBuilder):
         joint_params = sample_joint_params_fn()
 
         for joint in body.findall(".//joint"):
+            # set the position and axis of the joints
             joint_name = joint.get("name")
             prefix = self.joint_map[joint_name]
 
-            poschild, axis, range_min, range_max = exputils.get_joint_properties(
-                self.blend_obj, prefix
-            )
+            pos_vals = surface.read_attr_data(self.blend_obj, prefix + "_pos")
+            pos_mask = np.any(pos_vals != 0.0, axis=1)
+            if all(~pos_mask):
+                position = np.zeros(3)
+            else:
+                position = pos_vals[pos_mask].mean(axis=0)
+            joint.set("pos", exputils.array_to_string(position))
+            axis_vals = surface.read_attr_data(self.blend_obj, prefix + "_axis")
+            axis_mask = np.any(axis_vals != 0.0, axis=1)
+            if all(~axis_mask):
+                axis = np.array([0.0, 0.0, 1.0])
+            else:
+                axis = axis_vals[axis_mask].mean(axis=0)
+            joint.set("axis", exputils.array_to_string(axis))
 
-            # get the current coordinate frame
-            R = self.joint_to_coord_frame[joint_name]
+            min_vals = surface.read_attr_data(self.blend_obj, prefix + "_min")
+            min_mask = min_vals != 0.0
+            if all(~min_mask):
+                range_min = 0.0
+            else:
+                range_min = min_vals[min_mask].mean()
 
-            # set the position of the joint relative to the child
-            joint.set("pos", exputils.array_to_string(R @ poschild))
+            max_vals = surface.read_attr_data(self.blend_obj, prefix + "_max")
+            max_mask = max_vals != 0.0
+            if all(~max_mask):
+                range_max = 0.0
+            else:
+                range_max = max_vals[max_mask].mean()
 
-            # set the axis of the joint
-            joint.set("axis", exputils.array_to_string(R @ axis))
-
-            # set the min and max range for the joint values
             if not (np.isclose(range_max, 0.0) and np.isclose(range_min, 0.0)):
                 joint.set("limited", "true")
                 joint.set("range", f"{range_min} {range_max}")
@@ -435,9 +395,6 @@ def export(
     export_dir: Path = Path("./sim_exports/mjcf"),
     image_res: int = 512,
     visual_only: bool = True,
-    get_raw_output: bool = False,
-    options: Optional[Dict] = None,
-    extra_exclude: Optional[set] = None,
     **kwargs,
 ):
     """Export function for the MJCF file format."""
@@ -462,27 +419,6 @@ def export(
     )
 
     metadata.update(builder.get_bounding_box_info())
-
-    # post process collision geometries and exclude links
-    links = builder.post_processing_collision_info.keys()
-    if extra_exclude is not None:
-        for e in extra_exclude:
-            if e[0] in links and e[1] in links:
-                builder.contact.append(
-                    create_element("exclude", body1=e[0], body2=e[1])
-                )
-                builder.exclude_links.add(e)
-
-    exputils.post_process_collisions(
-        builder.post_processing_collision_info, obj_assets_dir, builder.exclude_links
-    )
-
-    # additional options
-    if options is not None:
-        builder.mujoco.append(create_element("option", **options))
-
-    if get_raw_output:
-        return builder.mujoco, metadata
 
     # save the mjcf
     mjcf_path, metadata_path = save(

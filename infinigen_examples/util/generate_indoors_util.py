@@ -151,7 +151,10 @@ def overhead_view(cam, room_name):
     cam.rotation_euler = (0, 0, 0)
 
 
-def hide_other_rooms(state, rooms_split, keep_rooms: list[str]):
+@gin.configurable
+def hide_other_rooms(
+    state, rooms_split, keep_rooms: list[str], film_transparent: bool = False
+):
     for col in rooms_split.values():
         for o in col.objects:
             if any(roomname.split(".")[0] in o.name for roomname in keep_rooms):
@@ -173,7 +176,8 @@ def hide_other_rooms(state, rooms_split, keep_rooms: list[str]):
     for o in hide_cutters:
         o.hide_render = True
         o.hide_viewport = True
-    bpy.context.scene.render.film_transparent = True
+    # If False, world background (Nishita sky / HDR) shows through windows; if True, background is transparent (black).
+    bpy.context.scene.render.film_transparent = film_transparent
 
 
 def apply_greedy_restriction(

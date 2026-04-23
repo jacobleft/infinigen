@@ -6,45 +6,25 @@
 # - Abhishek Joshi: primary author
 
 
-def sim_exporter_factory(exporter="mjcf", legacy=False, **kwargs):
+def sim_exporter_factory(exporter="mjcf", **kwargs):
     """
     Creates an instance of a sim exporter
     """
 
-    if not legacy:
-        if exporter in ["usd", "usda", "usdc"]:
-            from infinigen.core.sim.exporters.usd_exporter import export
+    if exporter in ["usd", "usda", "usdc"]:
+        from infinigen.core.sim.exporters.usd_exporter import export
 
-            return export
-        elif exporter == "mjcf":
-            from infinigen.core.sim.exporters.mjcf_exporter import export
+        return export
+    elif exporter == "mjcf":
+        from infinigen.core.sim.exporters.mjcf_exporter import export
 
-            return export
-        elif exporter == "urdf":
-            from infinigen.core.sim.exporters.urdf_exporter import export
+        return export
+    elif exporter == "urdf":
+        from infinigen.core.sim.exporters.urdf_exporter import export
 
-            return export
-        else:
-            print(
-                f"Exporter type {exporter} is not supported. Supported types \
-                    include [usd, mjcf, urdf]."
-            )
-
+        return export
     else:
-        if exporter in ["usd", "usda", "usdc"]:
-            from infinigen.core.sim.exporters.legacy.usd_exporter import export
-
-            return export
-        elif exporter == "mjcf":
-            from infinigen.core.sim.exporters.legacy.mjcf_exporter import export
-
-            return export
-        elif exporter == "urdf":
-            from infinigen.core.sim.exporters.legacy.urdf_exporter import export
-
-            return export
-        else:
-            print(
-                f"Exporter type {exporter} is not supported. Supported types \
-                    include [usd, mjcf, urdf]."
-            )
+        print(
+            f"Exporter type {exporter} is not supported. Supported types \
+                include [usd, mjcf, urdf]."
+        )

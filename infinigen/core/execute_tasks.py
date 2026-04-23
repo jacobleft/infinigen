@@ -188,7 +188,7 @@ def execute_tasks(
     camera_id: tuple[int],
     resample_idx: int = None,
     output_blend_name: str = "scene.blend",
-    generate_resolution=(1280, 720),
+    generate_resolution=(1024, 1024),
     fps: int = 24,
     reset_assets=True,
     dryrun=False,

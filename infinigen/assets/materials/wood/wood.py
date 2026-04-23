@@ -162,12 +162,17 @@ def shader_wood(nw: NodeWrangler, color=None, w=None, vertical=False, **kwargs):
 
     multiply = nw.new_node(
         Nodes.Math,
-        input_kwargs={0: mix_2.outputs[2], 1: log_uniform(0.0002, 0.01)},
+        input_kwargs={0: mix_2.outputs[2], 1: log_uniform(0.0012, 0.015)},
         attrs={"operation": "MULTIPLY"},
     )
 
     displacement = nw.new_node(
-        "ShaderNodeDisplacement", input_kwargs={"Height": multiply, "Midlevel": 0.0000}
+        "ShaderNodeDisplacement",
+        input_kwargs={
+            "Height": multiply,
+            "Midlevel": 0.0000,
+            "Scale": log_uniform(0.3, 0.9),
+        },
     )
 
     color = mix_3.outputs[2]

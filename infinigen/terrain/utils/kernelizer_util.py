@@ -73,7 +73,6 @@ class AttributeType:
     FloatVector = "FLOAT_VECTOR"
     FloatColor = "FLOAT_COLOR"
     Boolean = "BOOLEAN"
-    Float4x4 = "FLOAT4X4"
 
 
 class FieldsType:
@@ -89,7 +88,6 @@ ATTRTYPE_DIMS = {
     AttributeType.FloatVector: 3,
     AttributeType.FloatColor: 4,
     AttributeType.Boolean: 1,
-    AttributeType.Float4x4: 16,
 }
 
 ATTRTYPE_FIELDS = {
@@ -98,7 +96,6 @@ ATTRTYPE_FIELDS = {
     AttributeType.FloatVector: FieldsType.Vector,
     AttributeType.FloatColor: FieldsType.Color,
     AttributeType.Boolean: FieldsType.Value,
-    AttributeType.Float4x4: FieldsType.Value,
 }
 
 ATTRTYPE_NP = {

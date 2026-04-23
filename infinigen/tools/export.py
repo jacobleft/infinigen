@@ -33,7 +33,144 @@ BAKE_TYPES = {
     "NORMAL": "Normal",
 }  # 'EMIT':'Emission Color' #  "GLOSSY": 'Specular IOR Level', 'TRANSMISSION':'Transmission Weight' don't export
 SPECIAL_BAKE = {"METAL": "Metallic", "TRANSMISSION": "Transmission Weight"}
-ALL_BAKE = BAKE_TYPES | SPECIAL_BAKE
+ALPHA_BAKE = {"ALPHA": "Alpha"}  # Alpha uses EMIT baking like SPECIAL_BAKE
+ALL_BAKE = BAKE_TYPES | SPECIAL_BAKE | ALPHA_BAKE
+
+
+@gin.configurable
+def export_displacement_as_bump_distance():
+    """Bump Distance fallback for materials that have no ShaderNodeDisplacement Scale."""
+    return 1.0
+
+
+def _find_principled_bsdf(nodes) -> Optional[bpy.types.Node]:
+    for n in nodes:
+        if n.bl_idname == "ShaderNodeBsdfPrincipled":
+            return n
+    key = nodes.get("Principled BSDF")
+    return key if key and key.bl_idname == "ShaderNodeBsdfPrincipled" else None
+
+
+def convert_displacement_to_bump_for_isaac(obj: bpy.types.Object) -> None:
+    """
+    Convert every material's Material Output → Displacement chain into a Bump node
+    feeding Principled BSDF → Normal, so the subsequent NORMAL bake captures the detail.
+
+    Handles:
+      - ShaderNodeDisplacement (extracts Height, multiplies by Scale, sets Distance)
+      - Direct scalar / vector connections
+      - Existing Bump/NormalMap already on Principled Normal (chains them)
+    """
+    fallback_distance = float(export_displacement_as_bump_distance())
+
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None or not mat.use_nodes:
+            continue
+        tree = mat.node_tree
+        nodes = tree.nodes
+        links = tree.links
+
+        output = nodes.get("Material Output")
+        if output is None:
+            continue
+        disp_in = output.inputs.get("Displacement")
+        if disp_in is None or not disp_in.is_linked:
+            continue
+
+        link = disp_in.links[0]
+        from_node = link.from_node
+        from_socket = link.from_socket
+        links.remove(link)
+
+        bsdf = _find_principled_bsdf(nodes)
+        if bsdf is None:
+            logging.warning(
+                "Displacement→Bump on %s / %s: no Principled BSDF found",
+                obj.name, mat.name,
+            )
+            continue
+
+        bump = nodes.new(type="ShaderNodeBump")
+        bump.label = "ExportDisp2Bump"
+        bump.location = (bsdf.location[0] - 300, bsdf.location[1] - 140)
+        bump.inputs["Strength"].default_value = 1.0
+
+        height_in = bump.inputs.get("Height")
+        normal_in_bump = bump.inputs.get("Normal")
+        if height_in is None:
+            nodes.remove(bump)
+            continue
+
+        height_connected = False
+        if from_node.bl_idname == "ShaderNodeDisplacement":
+            disp_node = from_node
+            h_sock = disp_node.inputs.get("Height")
+            scale_sock = disp_node.inputs.get("Scale")
+            midlevel_sock = disp_node.inputs.get("Midlevel")
+
+            disp_scale = scale_sock.default_value if scale_sock and not scale_sock.is_linked else 1.0
+            disp_midlevel = midlevel_sock.default_value if midlevel_sock and not midlevel_sock.is_linked else 0.5
+
+            bump.inputs["Distance"].default_value = max(abs(disp_scale), 0.001)
+
+            if h_sock is not None and h_sock.is_linked:
+                height_source = h_sock.links[0].from_socket
+                if abs(disp_midlevel) > 1e-6:
+                    sub = nodes.new(type="ShaderNodeMath")
+                    sub.operation = "SUBTRACT"
+                    sub.label = "DispMidlevelSub"
+                    sub.location = (bump.location[0] - 200, bump.location[1])
+                    links.new(height_source, sub.inputs[0])
+                    sub.inputs[1].default_value = disp_midlevel
+                    links.new(sub.outputs[0], height_in)
+                else:
+                    links.new(height_source, height_in)
+                height_connected = True
+            elif h_sock is not None:
+                height_in.default_value = h_sock.default_value - disp_midlevel
+                height_connected = True
+            else:
+                bump.inputs["Distance"].default_value = fallback_distance
+        elif from_socket.type == "VALUE":
+            links.new(from_socket, height_in)
+            bump.inputs["Distance"].default_value = fallback_distance
+            height_connected = True
+        elif from_socket.type == "VECTOR":
+            sep = nodes.new(type="ShaderNodeSeparateXYZ")
+            sep.label = "DispVec2Height"
+            sep.location = (bump.location[0] - 200, bump.location[1])
+            links.new(from_socket, sep.inputs.get("Vector") or sep.inputs[0])
+            links.new(sep.outputs["Z"], height_in)
+            bump.inputs["Distance"].default_value = fallback_distance
+            height_connected = True
+        else:
+            try:
+                links.new(from_socket, height_in)
+                bump.inputs["Distance"].default_value = fallback_distance
+                height_connected = True
+            except RuntimeError:
+                pass
+
+        if not height_connected:
+            nodes.remove(bump)
+            logging.warning("Could not wire displacement→bump for %s / %s", obj.name, mat.name)
+            continue
+
+        normal_bsdf = bsdf.inputs.get("Normal")
+        if normal_bsdf is None:
+            nodes.remove(bump)
+            continue
+        if normal_bsdf.is_linked and normal_in_bump is not None:
+            existing = normal_bsdf.links[0]
+            links.new(existing.from_socket, normal_in_bump)
+            links.remove(existing)
+        links.new(bump.outputs["Normal"], normal_bsdf)
+
+        logging.info(
+            "Displacement→Bump (distance=%s) on %s / %s",
+            bump.inputs["Distance"].default_value, obj.name, mat.name,
+        )
 
 
 def apply_all_modifiers(obj):
@@ -309,13 +446,31 @@ def bakeVertexColors(obj):
     obj.select_set(False)
 
 
-def apply_baked_tex(obj, paramDict={}):
+def apply_baked_tex(
+    obj, paramDict={}, texture_dir=None, img_size=None, export_name=None
+):
     bpy.context.view_layer.objects.active = obj
     bpy.context.object.data.uv_layers["ExportUV"].active_render = True
     for uv_layer in reversed(obj.data.uv_layers):
         if "ExportUV" not in uv_layer.name:
             logging.info(f"Removed extraneous UV Layer {uv_layer}")
             obj.data.uv_layers.remove(uv_layer)
+
+    # Get image size from existing baked textures to match resolution
+    if img_size is None:
+        img_size = 1024  # default
+        if texture_dir:
+            texture_dir_path = Path(texture_dir)
+            # Try to find an existing baked texture to get the image size
+            if texture_dir_path.exists():
+                for tex_file in texture_dir_path.glob("*_DIFFUSE.png"):
+                    try:
+                        existing_img = bpy.data.images.load(str(tex_file))
+                        img_size = existing_img.size[0]
+                        bpy.data.images.remove(existing_img)
+                        break
+                    except:
+                        pass
 
     for slot in obj.material_slots:
         mat = slot.material
@@ -325,9 +480,127 @@ def apply_baked_tex(obj, paramDict={}):
         nodes = mat.node_tree.nodes
         logging.info("Reapplying baked texs on " + mat.name)
 
+        # Before deleting nodes, preserve alpha connection information and material settings
+        # Look for mask texture or any texture connected to Alpha input
+        alpha_connection_info = None
+        baked_alpha_img = None
+        material_alpha_settings = {}
+
+        # Preserve material blend mode and alpha settings
+        if mat:
+            material_alpha_settings = {
+                "blend_method": mat.blend_method,
+                "alpha_threshold": mat.alpha_threshold,
+                "shadow_method": mat.shadow_method,
+                "show_transparent_back": mat.show_transparent_back,
+            }
+
+        if nodes.get("Principled BSDF"):
+            bsdf_before = nodes["Principled BSDF"]
+            alpha_input = bsdf_before.inputs.get("Alpha")
+            if alpha_input and alpha_input.is_linked:
+                # Find what's connected to alpha
+                alpha_link = alpha_input.links[0]
+                from_node = alpha_link.from_node
+                from_socket = alpha_link.from_socket
+
+                # Check if it's a mask texture (label contains "mask" or "Mask")
+                # or if it's connected through an RGBToBW node (common for masks)
+                # or if it's connected through a Separate Color node (common for texture_ prefixed meshes)
+                if from_node.bl_idname == "ShaderNodeSeparateColor":
+                    # Check if Separate Color is connected to a texture (likely a mask)
+                    # For texture_ prefixed meshes: mask_img.Color -> Separate Color (RGB) -> Separate Color (Red) -> Alpha
+                    separate_color_node = from_node
+                    output_socket_name = from_socket.name
+
+                    # Check if it's outputting Red channel (or R)
+                    if output_socket_name in ["Red", "R"]:
+                        # Trace back to find the mask image texture
+                        if (
+                            separate_color_node.inputs.get("Color")
+                            and separate_color_node.inputs["Color"].is_linked
+                        ):
+                            color_input_link = separate_color_node.inputs[
+                                "Color"
+                            ].links[0]
+                            mask_tex = color_input_link.from_node
+
+                            if mask_tex.type == "TEX_IMAGE" and mask_tex.image:
+                                # Found mask texture connected via Separate Color (Red channel)
+                                alpha_connection_info = {
+                                    "type": "mask_texture_separate_color_red",
+                                    "image": mask_tex.image,
+                                    "node_name": mask_tex.name,
+                                    "separate_color_mode": (
+                                        separate_color_node.mode
+                                        if hasattr(separate_color_node, "mode")
+                                        else None
+                                    ),
+                                }
+                                logging.info(
+                                    f"Found mask texture via Separate Color (Red): {mask_tex.name}"
+                                )
+                elif from_node.bl_idname == "ShaderNodeRGBToBW":
+                    # Check if RGBToBW is connected to a texture (likely a mask)
+                    if from_node.inputs["Color"].is_linked:
+                        mask_tex = from_node.inputs["Color"].links[0].from_node
+                        if mask_tex.type == "TEX_IMAGE" and mask_tex.image:
+                            # RGBToBW typically used for mask textures
+                            alpha_connection_info = {
+                                "type": "mask_texture_rgb2bw",
+                                "image": mask_tex.image,
+                                "node_name": mask_tex.name,
+                            }
+                            logging.info(
+                                f"Found mask texture via RGBToBW: {mask_tex.name}"
+                            )
+                elif from_node.type == "TEX_IMAGE" and from_node.image:
+                    node_label = from_node.label.lower() if from_node.label else ""
+                    node_name = from_node.name.lower()
+                    if "mask" in node_label or "mask" in node_name:
+                        # This is a mask texture - preserve it
+                        alpha_connection_info = {
+                            "type": "mask_texture",
+                            "image": from_node.image,
+                            "node_name": from_node.name,
+                        }
+                        logging.info(f"Found mask texture for alpha: {from_node.name}")
+                    elif from_socket.name == "Alpha":
+                        # Opacity texture connected via Alpha output
+                        if "opacity" in node_label or "alpha" in node_label:
+                            alpha_connection_info = {
+                                "type": "opacity_texture",
+                                "image": from_node.image,
+                                "node_name": from_node.name,
+                                "use_alpha_channel": True,
+                            }
+                            logging.info(
+                                f"Found opacity texture for alpha: {from_node.name}"
+                            )
+                    else:
+                        # Check if this texture is connected to Alpha but not through RGBToBW
+                        # This might be a direct mask connection
+                        # Look at the image filename to see if it's likely a mask
+                        img_name = (
+                            from_node.image.name.lower() if from_node.image.name else ""
+                        )
+                        if "mask" in img_name:
+                            alpha_connection_info = {
+                                "type": "mask_texture",
+                                "image": from_node.image,
+                                "node_name": from_node.name,
+                            }
+                            logging.info(
+                                f"Found mask texture (by image name) for alpha: {from_node.name}"
+                            )
+
+        # We'll use the DIFFUSE baked texture's Red channel for alpha instead of baking separately
+
         # delete all nodes except baked nodes and bsdf
         excludedNodes = [type + "_node" for type in ALL_BAKE]
-        excludedNodes.extend(["Material Output", "Principled BSDF"])
+        excludedNodes.extend(
+            ["ALPHA_node", "Material Output", "Principled BSDF"]
+        )  # Include ALPHA_node
         for n in nodes:
             if n.name not in excludedNodes:
                 nodes.remove(
@@ -361,13 +634,56 @@ def apply_baked_tex(obj, paramDict={}):
                 continue
             tex_node = nodes[type + "_node"]
             if type == "NORMAL":
+                if tex_node.image is not None:
+                    try:
+                        tex_node.image.colorspace_settings.name = "Non-Color"
+                    except Exception:
+                        logging.warning(
+                            "Failed to set Non-Color on NORMAL texture for %s", mat.name
+                        )
                 normal_node = nodes.new("ShaderNodeNormalMap")
-                links.new(normal_node.inputs["Color"], tex_node.outputs[0])
+                normal_node.space = "TANGENT"
+                normal_node.inputs["Strength"].default_value = 1.0
+                color_out = (
+                    tex_node.outputs.get("Color")
+                    if tex_node.outputs.get("Color")
+                    else tex_node.outputs[0]
+                )
+                links.new(normal_node.inputs["Color"], color_out)
                 links.new(
                     principled_bsdf_node.inputs[ALL_BAKE[type]], normal_node.outputs[0]
                 )
                 continue
-            links.new(principled_bsdf_node.inputs[ALL_BAKE[type]], tex_node.outputs[0])
+            # For Base Color, always connect Color output explicitly to avoid alpha connection
+            if type == "DIFFUSE":
+                # Explicitly use Color output to prevent alpha from being connected
+                links.new(
+                    principled_bsdf_node.inputs[ALL_BAKE[type]],
+                    tex_node.outputs["Color"],
+                )
+            else:
+                links.new(
+                    principled_bsdf_node.inputs[ALL_BAKE[type]], tex_node.outputs[0]
+                )
+
+        # Restore alpha connection using baked ALPHA texture (baked the same way as other textures)
+        if alpha_connection_info and nodes.get("ALPHA_node"):
+            alpha_node = nodes["ALPHA_node"]
+
+            # The ALPHA texture was already baked, so we can use it directly
+            # Extract Red channel for alpha (matching the original mask texture pattern)
+            separate_color_node = nodes.new("ShaderNodeSeparateColor")
+            separate_color_node.mode = "RGB"
+
+            # Connect ALPHA texture Color output to Separate Color input
+            links.new(alpha_node.outputs["Color"], separate_color_node.inputs["Color"])
+            # Connect Separate Color Red output to Principled BSDF Alpha input
+            links.new(
+                separate_color_node.outputs["Red"], principled_bsdf_node.inputs["Alpha"]
+            )
+            logging.info(
+                f"Connected baked ALPHA texture Red channel to Alpha for {mat.name}"
+            )
 
         # bring back cleared param values
         if mat.name in paramDict:
@@ -380,6 +696,36 @@ def apply_baked_tex(obj, paramDict={}):
             principled_bsdf_node.inputs["Coat Weight"].default_value = paramDict[
                 mat.name
             ]["Coat Weight"]
+
+        # Restore material alpha/transparency settings if they were preserved
+        # Set opacity threshold to 0.5 for all materials with alpha (like roughness threshold)
+        if alpha_connection_info:
+            # Set blend method and alpha threshold for proper transparency in USD/Isaac Sim
+            mat.blend_method = "CLIP"
+            mat.alpha_threshold = 0.5  # Set to 0.5 for all
+            mat.shadow_method = "CLIP"
+            mat.show_transparent_back = (
+                material_alpha_settings.get("show_transparent_back", False)
+                if material_alpha_settings
+                else False
+            )
+
+            # Set custom properties that might be exported to USD (Isaac Sim might read these)
+            mat["opacityThreshold"] = 0.5
+            mat["opacity_threshold"] = 0.5
+            mat["usd_opacity_threshold"] = 0.5
+
+            # Also set on Principled BSDF node if possible (some USD exporters read node properties)
+            if nodes.get("Principled BSDF"):
+                bsdf_node = nodes["Principled BSDF"]
+                # Try to set any opacity-related properties on the node
+                if hasattr(bsdf_node, "inputs") and "Alpha" in bsdf_node.inputs:
+                    # The Alpha input itself is already connected, but we can ensure threshold is set
+                    pass  # Alpha connection is already handled above
+
+            logging.info(
+                f"Set opacity threshold to 0.5 for {obj.name}: blend_method={mat.blend_method}, alpha_threshold={mat.alpha_threshold}"
+            )
 
 
 def create_glass_shader(node_tree, export_usd):
@@ -440,6 +786,12 @@ def bake_pass(obj, dest: Path, img_size, bake_type, export_usd, export_name=None
     else:
         img = bpy.data.images.new(f"{export_name}_{bake_type}", img_size, img_size)
         file_path = dest / f"{export_name}_{bake_type}.png"
+    if bake_type == "NORMAL":
+        try:
+            img.colorspace_settings.name = "Non-Color"
+        except Exception:
+            logging.warning("Could not set Non-Color colorspace on baked NORMAL image")
+
     dest = dest / "textures"
 
     bake_obj = False
@@ -495,9 +847,21 @@ def bake_pass(obj, dest: Path, img_size, bake_type, export_usd, export_name=None
 
     if bake_obj:
         logging.info(f"Baking {bake_type} pass")
-        bpy.ops.object.bake(
-            type=internal_bake_type, pass_filter={"COLOR"}, save_mode="EXTERNAL"
-        )
+        if internal_bake_type == "NORMAL":
+            bpy.ops.object.bake(
+                type="NORMAL",
+                normal_space="TANGENT",
+                save_mode="EXTERNAL",
+                margin=32,
+                margin_type="EXTEND",
+                use_clear=True,
+            )
+        else:
+            bpy.ops.object.bake(
+                type=internal_bake_type,
+                pass_filter={"COLOR"},
+                save_mode="EXTERNAL",
+            )
         img.filepath_raw = str(file_path)
         img.save()
         logging.info(f"Saving to {file_path}")
@@ -506,6 +870,134 @@ def bake_pass(obj, dest: Path, img_size, bake_type, export_usd, export_name=None
 
     for mat, img_node in bake_exclude_mats.items():
         mat.node_tree.nodes.remove(img_node)
+
+
+def bake_alpha_pass(obj, dest, img_size, export_usd, export_name=None):
+    """
+    Bake the Alpha input from Principled BSDF to an image, using the same approach as other textures.
+    This follows the pattern of bake_pass but uses EMIT baking like SPECIAL_BAKE.
+    """
+    # Check if any material has an alpha connection
+    has_alpha = False
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None or not mat.use_nodes:
+            continue
+        nodes = mat.node_tree.nodes
+        if nodes.get("Principled BSDF"):
+            bsdf = nodes["Principled BSDF"]
+            alpha_input = bsdf.inputs.get("Alpha")
+            if alpha_input and alpha_input.is_linked:
+                has_alpha = True
+                break
+
+    if not has_alpha:
+        logging.info(f"No alpha connection found on {obj.name}, skipping alpha bake")
+        return
+
+    # Create image for baked alpha (same pattern as bake_pass)
+    if export_name is None:
+        img = bpy.data.images.new(f"{obj.name}_ALPHA", img_size, img_size)
+        clean_name = (obj.name).replace(" ", "_").replace(".", "_").replace("/", "_")
+        file_path = dest / "textures" / f"{clean_name}_ALPHA.png"
+    else:
+        img = bpy.data.images.new(f"{export_name}_ALPHA", img_size, img_size)
+        file_path = dest / "textures" / f"{export_name}_ALPHA.png"
+
+    # Store original links to restore later
+    links_to_restore = []
+
+    # For each material, temporarily connect Alpha to emission for baking
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None or not mat.use_nodes:
+            continue
+
+        nodes = mat.node_tree.nodes
+        output = nodes.get("Material Output")
+        bsdf = nodes.get("Principled BSDF")
+
+        if not output or not bsdf:
+            continue
+
+        alpha_input = bsdf.inputs.get("Alpha")
+        if not alpha_input or not alpha_input.is_linked:
+            continue
+
+        # Create image node for this material
+        img_node = nodes.new("ShaderNodeTexImage")
+        img_node.name = "ALPHA_node"
+        img_node.image = img
+        img_node.select = True
+        nodes.active = img_node
+
+        # Get what's connected to Alpha
+        links = mat.node_tree.links
+        alpha_source = alpha_input.links[0].from_socket
+
+        # Temporarily connect Alpha source to emission
+        emission = nodes.new("ShaderNodeEmission")
+        links.new(alpha_source, emission.inputs["Color"])
+
+        # Temporarily connect emission to surface output
+        # Store original surface connection BEFORE removing it
+        original_surface_links = list(output.inputs["Surface"].links)
+        original_from_socket = None
+        if original_surface_links:
+            original_from_socket = original_surface_links[
+                0
+            ].from_socket  # Store socket before removing link
+            links.remove(original_surface_links[0])
+        links.new(emission.outputs["Emission"], output.inputs["Surface"])
+
+        # Store for restoration (store socket references, not link objects)
+        links_to_restore.append((mat, nodes, output, original_from_socket, emission))
+
+    if links_to_restore:
+        # Ensure ExportUV is active
+        if "ExportUV" in obj.data.uv_layers:
+            obj.data.uv_layers["ExportUV"].active_render = True
+
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+
+        # Bake using EMIT (same as SPECIAL_BAKE)
+        logging.info(f"Baking ALPHA pass for {obj.name}")
+        bpy.ops.object.bake(type="EMIT", pass_filter={"COLOR"}, save_mode="EXTERNAL")
+
+        # Save the baked image
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        img.filepath_raw = str(file_path)
+        img.save()
+        logging.info(f"Saved baked alpha texture to: {file_path}")
+
+        # Restore original connections
+        for (
+            mat,
+            nodes,
+            output,
+            original_from_socket,
+            emission,
+        ) in links_to_restore:
+            links = mat.node_tree.links
+
+            # Remove emission connection
+            emission_links = [
+                l for l in output.inputs["Surface"].links if l.from_node == emission
+            ]
+            for link in emission_links:
+                links.remove(link)
+
+            # Restore original surface connection if it existed
+            if original_from_socket:
+                try:
+                    links.new(original_from_socket, output.inputs["Surface"])
+                except Exception as e:
+                    logging.warning(f"Could not restore original surface link: {e}")
+
+            # Clean up emission node
+            if emission.name in nodes:
+                nodes.remove(nodes[emission.name])
 
 
 def bake_special_emit(obj, dest, img_size, export_usd, bake_type, export_name=None):
@@ -702,10 +1194,8 @@ def adjust_wattages():
             if hasattr(light, "energy") and hasattr(light, "shadow_soft_size"):
                 X = light.energy
                 r = light.shadow_soft_size
-                # candelas * 1000 / (4 * math.pi * r**2). additionally units come out of blender at 1/100 scale
-                new_wattage = (
-                    (X * 20 / (4 * math.pi)) * 1000 / (4 * math.pi * r**2) * 100
-                )
+                # Reduced multipliers for Isaac Sim compatibility
+                new_wattage = (X * 2 / (4 * math.pi)) * 100 / (4 * math.pi * r**2) * 10
                 light.energy = new_wattage
 
 
@@ -766,6 +1256,8 @@ def bake_object(obj, dest, img_size, export_usd, export_name=None):
                 )  # we duplicate in the case of distinct meshes sharing materials
 
         process_glass_materials(obj, export_usd)
+        if export_usd:
+            convert_displacement_to_bump_for_isaac(obj)
 
         for bake_type in SPECIAL_BAKE:
             bake_special_emit(obj, dest, img_size, export_usd, bake_type, export_name)
@@ -775,7 +1267,23 @@ def bake_object(obj, dest, img_size, export_usd, export_name=None):
         for bake_type in BAKE_TYPES:
             bake_pass(obj, dest, img_size, bake_type, export_usd, export_name)
 
-        apply_baked_tex(obj, paramDict)
+        # Bake Alpha if there's an alpha connection (must be done before apply_baked_tex deletes nodes)
+        bake_alpha_pass(obj, dest, img_size, export_usd, export_name)
+
+        # Get textures directory path for saving mask textures
+        texture_dir = (
+            dest / "textures"
+            if isinstance(dest, Path)
+            else Path(str(dest)) / "textures"
+        )
+        texture_dir.mkdir(exist_ok=True)
+        apply_baked_tex(
+            obj,
+            paramDict,
+            texture_dir=texture_dir,
+            img_size=img_size,
+            export_name=export_name,
+        )
 
 
 def bake_scene(folderPath: Path, image_res, vertex_colors, export_usd):
@@ -803,6 +1311,222 @@ def bake_scene(folderPath: Path, image_res, vertex_colors, export_usd):
 
         obj.hide_render = True
         obj.hide_viewport = True
+
+
+def set_opacity_threshold_in_usd(usd_file_path: Path, threshold: float = 0.5):
+    """
+    Post-process USD file to set opacity threshold to 0.5 on all UsdPreviewSurface shaders
+    that have alpha/opacity textures connected.
+    """
+    try:
+        from pxr import Sdf, Usd, UsdShade
+    except ImportError:
+        logging.warning(
+            "pxr (USD Python) not available, cannot set opacity threshold in USD file"
+        )
+        return
+
+    stage = Usd.Stage.Open(str(usd_file_path))
+    if not stage:
+        logging.warning(f"Could not open USD file: {usd_file_path}")
+        return
+
+    # Find all materials and their PreviewSurface shaders
+    materials_updated = 0
+    for prim in stage.Traverse():
+        if prim.IsA(UsdShade.Material):
+            material = UsdShade.Material(prim)
+            # Get the surface output to find the shader
+            surface_output = material.GetSurfaceOutput()
+            if surface_output:
+                # Find connected shader
+                shader_source = surface_output.GetConnectedSource()
+                if shader_source:
+                    shader_prim = shader_source[0].GetPrim()
+                    shader = UsdShade.Shader(shader_prim)
+
+                    # Check if it's a PreviewSurface shader
+                    shader_id = shader.GetIdAttr().Get()
+                    if shader_id == "UsdPreviewSurface":
+                        # Set opacity threshold on ALL PreviewSurface shaders (like roughness threshold)
+                        # This ensures opacity threshold is always 0.5 for all materials
+                        opacity_threshold_input = shader.GetInput("opacityThreshold")
+                        if opacity_threshold_input:
+                            opacity_threshold_input.Set(threshold)
+                        else:
+                            # Create the input if it doesn't exist
+                            opacity_threshold_input = shader.CreateInput(
+                                "opacityThreshold", Sdf.ValueTypeNames.Float
+                            )
+                            opacity_threshold_input.Set(threshold)
+                        materials_updated += 1
+                        logging.info(
+                            f"Set opacity threshold to {threshold} for PreviewSurface shader at {shader_prim.GetPath()}"
+                        )
+
+    if materials_updated > 0:
+        stage.Save()
+        logging.info(
+            f"Updated opacity threshold for {materials_updated} materials in {usd_file_path}"
+        )
+    else:
+        logging.info(f"No materials with opacity textures found in {usd_file_path}")
+
+
+def fix_usd_normal_map_sampling(
+    usd_file_path: Path, flip_green: Optional[bool] = None
+) -> None:
+    """
+    Isaac Sim / Omniverse often treat 8-bit RGB as sRGB under UsdUVTexture defaults,
+    which destroys tangent normals. Force inputs:sourceColorSpace = raw.
+
+    Optional flip_green applies OpenGL→DirectX green correction on G (scale/bias).
+    Default False — UsdPreviewSurface spec uses OpenGL convention (same as Blender).
+    """
+    if flip_green is None:
+        flip_green = False
+
+    try:
+        from pxr import Gf, Sdf, Usd, UsdShade
+    except ImportError:
+        logging.warning(
+            "pxr (USD Python) not available; Isaac Sim may show flat normals (no USD fix)."
+        )
+        return
+
+    _v4_one = Gf.Vec4f(1, 1, 1, 1)
+    _v4_zero = Gf.Vec4f(0, 0, 0, 0)
+
+    def _texture_basename(tex_shader: UsdShade.Shader) -> str:
+        fin = tex_shader.GetInput("file")
+        if not fin or not fin.HasAuthoredValue():
+            return ""
+        v = fin.Get()
+        if not v:
+            return ""
+        p = getattr(v, "path", None)
+        return Path(str(p if p is not None else v)).name.lower()
+
+    def _filename_suggests_normal_map(name: str) -> bool:
+        if not name:
+            return False
+        u = name.upper()
+        return "_NORMAL." in u or u.endswith("_NORMAL.PNG") or u.endswith("_NORMAL.EXR")
+
+    def _walk_to_uv_textures(
+        shader: UsdShade.Shader, _out_name: str, visited: set
+    ) -> List[UsdShade.Shader]:
+        key = (str(shader.GetPath()), _out_name)
+        if key in visited:
+            return []
+        visited.add(key)
+        id_attr = shader.GetIdAttr()
+        sid = id_attr.Get() if id_attr else None
+        if sid == "UsdUVTexture":
+            return [shader]
+        out_list: List[UsdShade.Shader] = []
+        for inp in shader.GetInputs():
+            if not inp.HasConnectedSource():
+                continue
+            src_api, src_out, _ = inp.GetConnectedSource()
+            prim = src_api.GetPrim()
+            if not prim.IsValid():
+                continue
+            sub = UsdShade.Shader(prim)
+            out_list.extend(_walk_to_uv_textures(sub, str(src_out), visited))
+        return out_list
+
+    def _upstream_uv_from_normal_input(shade_input: UsdShade.Input) -> List[UsdShade.Shader]:
+        if not shade_input or not shade_input.HasConnectedSource():
+            return []
+        src_api, src_out, _ = shade_input.GetConnectedSource()
+        prim = src_api.GetPrim()
+        if not prim.IsValid():
+            return []
+        visited: set = set()
+        return _walk_to_uv_textures(UsdShade.Shader(prim), str(src_out), visited)
+
+    def _apply_green_flip_if_safe(tex_shader: UsdShade.Shader) -> None:
+        scale_inp = tex_shader.GetInput("scale")
+        bias_inp = tex_shader.GetInput("bias")
+        if scale_inp and scale_inp.HasConnectedSource():
+            return
+        if bias_inp and bias_inp.HasConnectedSource():
+            return
+        if scale_inp and scale_inp.HasAuthoredValue():
+            s = scale_inp.Get()
+            if s is None or not Gf.IsClose(
+                Gf.Vec4f(s[0], s[1], s[2], s[3]), _v4_one, 1e-5
+            ):
+                return
+        if bias_inp and bias_inp.HasAuthoredValue():
+            b = bias_inp.Get()
+            if b is not None and not Gf.IsClose(
+                Gf.Vec4f(b[0], b[1], b[2], b[3]), _v4_zero, 1e-5
+            ):
+                return
+        if not scale_inp:
+            scale_inp = tex_shader.CreateInput("scale", Sdf.ValueTypeNames.Float4)
+        if not bias_inp:
+            bias_inp = tex_shader.CreateInput("bias", Sdf.ValueTypeNames.Float4)
+        scale_inp.Set(Gf.Vec4f(1, -1, 1, 1))
+        bias_inp.Set(Gf.Vec4f(0, 1, 0, 0))
+        logging.info("Applied DX-style normal G flip on %s", tex_shader.GetPath())
+
+    stage = Usd.Stage.Open(str(usd_file_path))
+    if not stage:
+        logging.warning("Could not open USD for normal map fix: %s", usd_file_path)
+        return
+
+    by_path: Dict[str, UsdShade.Shader] = {}
+
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdShade.Shader):
+            continue
+        shader = UsdShade.Shader(prim)
+        id_attr = shader.GetIdAttr()
+        if not id_attr or id_attr.Get() != "UsdPreviewSurface":
+            continue
+        n_in = shader.GetInput("normal")
+        if not n_in:
+            continue
+        for uv in _upstream_uv_from_normal_input(n_in):
+            by_path[str(uv.GetPath())] = uv
+
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdShade.Shader):
+            continue
+        sh = UsdShade.Shader(prim)
+        id_attr = sh.GetIdAttr()
+        if not id_attr or id_attr.Get() != "UsdUVTexture":
+            continue
+        if _filename_suggests_normal_map(_texture_basename(sh)):
+            by_path[str(sh.GetPath())] = sh
+
+    updated = 0
+    for uv_tex in by_path.values():
+        sc = uv_tex.GetInput("sourceColorSpace")
+        if not sc:
+            sc = uv_tex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token)
+        sc.Set("raw")
+        updated += 1
+        logging.info("Set UsdUVTexture sourceColorSpace=raw at %s", uv_tex.GetPath())
+        if flip_green:
+            _apply_green_flip_if_safe(uv_tex)
+
+    if updated:
+        stage.Save()
+        logging.info(
+            "USD normal map fix: updated %d UsdUVTexture(s) in %s",
+            updated,
+            usd_file_path,
+        )
+    else:
+        logging.warning(
+            "USD normal map fix: no UsdUVTexture matched (graph or *_NORMAL.png naming) in %s — "
+            "normals may stay flat in Isaac Sim.",
+            usd_file_path,
+        )
 
 
 def run_blender_export(
@@ -854,11 +1578,22 @@ def run_blender_export(
         bpy.ops.wm.usd_export(
             filepath=exportPath,
             export_textures=True,
-            # use_instancing=True,
             overwrite_textures=True,
+            generate_preview_surface=True,
+            export_normals=True,
             selected_objects_only=individual_export,
             root_prim_path="/World",
         )
+        # Post-process USD file to set opacity threshold to 0.5 for materials with alpha
+        if Path(exportPath).exists():
+            try:
+                set_opacity_threshold_in_usd(exportPath, threshold=0.5)
+            except Exception as e:
+                logging.warning(f"Could not set opacity threshold in USD file: {e}")
+            try:
+                fix_usd_normal_map_sampling(Path(exportPath))
+            except Exception as e:
+                logging.warning(f"Could not fix USD normal map sampling: {e}")
 
 
 def export_scene(
@@ -967,7 +1702,6 @@ def export_sim_ready(
     visual_only: bool = False,
     collision_only: bool = False,
     separate_asset_dirs: bool = True,
-    zaxis: np.array = np.array([0, 0, 1]),
 ) -> Dict[str, List[Path]]:
     """
     Exports both the visual and collision assets for a geometry.
@@ -1080,10 +1814,6 @@ def export_sim_ready(
         mesh_tri = trimesh.load(
             str(part_export_obj_file), merge_norm=True, merge_tex=True, force="mesh"
         )
-        if isinstance(mesh_tri, trimesh.PointCloud):
-            continue
-        T = trimesh.geometry.align_vectors(zaxis, np.array([0, 0, 1]))
-        mesh_tri.apply_transform(T)
         trimesh.repair.fix_inversion(mesh_tri)
         preprocess_mode = "off"
         if not mesh_tri.is_volume:
@@ -1116,6 +1846,10 @@ def export_sim_ready(
             )
             subpart_mesh = trimesh.Trimesh(vs, fs)
 
+            # if subpart_mesh.is_empty:
+            #     raise ValueError(
+            #         "Warning: Collision mesh is completely outside the bounds of the original mesh."
+            #     )
             subpart_mesh.export(str(collision_export_file))
             asset_exports["collision"].append(collision_export_file)
             collision_count += 1

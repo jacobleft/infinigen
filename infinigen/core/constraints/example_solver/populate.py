@@ -21,6 +21,9 @@ from infinigen.core.util import blender as butil
 
 logger = logging.getLogger(__name__)
 
+# Filled by populate_state_placeholders; consumed by generate_indoors after room_walls
+deferred_wall_bubble_finalize = []
+
 
 def apply_cutter(state, objkey, cutter):
     os = state.objs[objkey]
@@ -76,6 +79,8 @@ def populate_state_placeholders(state: State, filter=None, final=True):
         targets.append(objkey)
 
     update_state_mesh_objs = []
+    deferred_spalling_plug_objs = []
+    deferred_wall_bubble_objs = []
 
     for i, objkey in enumerate(targets):
         os = state.objs[objkey]
@@ -92,7 +97,16 @@ def populate_state_placeholders(state: State, filter=None, final=True):
             loc=placeholder.location,  # we could use placeholder=pholder here, but I worry pholder may have been modified
             rot=placeholder.rotation_euler,
         )
-        os.generator.finalize_assets([os.obj])
+        # Defer SpallingPlugPlaneFactory finalize_assets until after all assets are populated,
+        # so wall plugs exist when we snap spalling plugs to them.
+        if os.generator.__class__.__name__ == "SpallingPlugPlaneFactory":
+            deferred_spalling_plug_objs.append((os.generator, os.obj))
+        # Defer WallBubblePlaneFactory finalize_assets until after split_rooms + room_walls,
+        # so .wall objects with materials exist.
+        elif os.generator.__class__.__name__ == "WallBubblePlaneFactory":
+            deferred_wall_bubble_objs.append((os.generator, os.obj))
+        else:
+            os.generator.finalize_assets([os.obj])
         butil.put_in_collection(os.obj, unique_assets)
 
         cutter = next(
@@ -108,6 +122,15 @@ def populate_state_placeholders(state: State, filter=None, final=True):
                 f"{populate_state_placeholders.__name__} cut {cutter.name=} from {cut_objs=}"
             )
             update_state_mesh_objs += cut_objs
+
+    # Run deferred SpallingPlugPlaneFactory finalize_assets now that all wall plugs exist
+    for generator, obj in deferred_spalling_plug_objs:
+        logger.info(f"Finalizing deferred spalling plug: {obj.name}")
+        generator.finalize_assets([obj])
+
+    # WallBubblePlaneFactory finalize runs after room_walls (see generate_indoors)
+    deferred_wall_bubble_finalize.clear()
+    deferred_wall_bubble_finalize.extend(deferred_wall_bubble_objs)
 
     unique_assets.hide_viewport = False
 

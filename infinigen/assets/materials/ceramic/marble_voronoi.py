@@ -73,9 +73,25 @@ def shader_marble_voronoi(nw: NodeWrangler):
         },
     )
 
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Vector": mapping,
+            "Scale": uniform(30, 60),
+            "Detail": uniform(6, 10),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.008, 0.02)),
+            "Scale": uniform(0.025, 0.06),
+        },
+    )
+
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": principled_bsdf},
+        input_kwargs={"Surface": principled_bsdf, "Displacement": displacement},
         attrs={"is_active_output": True},
     )
 

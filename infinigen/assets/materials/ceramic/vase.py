@@ -34,9 +34,25 @@ def shader_vase_ceramic(nw: NodeWrangler):
         },
     )
 
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(60, 120),
+            "Detail": uniform(6, 10),
+            "Distortion": uniform(0.5, 2),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.002, 0.006)),
+            "Scale": uniform(0.25, 0.55),
+        },
+    )
+
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": principled_bsdf},
+        input_kwargs={"Surface": principled_bsdf, "Displacement": displacement},
         attrs={"is_active_output": True},
     )
 

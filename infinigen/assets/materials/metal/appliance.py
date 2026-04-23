@@ -3,6 +3,8 @@
 
 # Authors: Hongyu Wen
 
+from numpy.random import uniform
+
 from infinigen.assets.materials.utils import common
 from infinigen.core import surface
 from infinigen.core.nodes.node_wrangler import Nodes, NodeWrangler
@@ -81,9 +83,28 @@ def shader_white_metal(nw: NodeWrangler):
         attrs={"subsurface_method": "BURLEY"},
     )
 
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(80, 140),
+            "Detail": uniform(6, 10),
+            "Distortion": uniform(0.5, 2),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.002, 0.005)),
+            "Scale": uniform(0.3, 0.7),
+        },
+    )
+
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": principled_bsdf},
+        input_kwargs={
+            "Surface": principled_bsdf,
+            "Displacement": displacement,
+        },
         attrs={"is_active_output": True},
     )
 

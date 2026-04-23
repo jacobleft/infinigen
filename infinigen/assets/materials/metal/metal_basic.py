@@ -13,10 +13,11 @@ from infinigen.core.nodes.node_wrangler import NodeWrangler
 
 def shader_metal(nw: NodeWrangler, color_hsv=None, **kwargs):
     position = nw.new_node(Nodes.TextureCoord).outputs["Object"]
+    noise = nw.new_node(
+        Nodes.NoiseTexture, [position], input_kwargs={"Scale": uniform(10, 25)}
+    )
     roughness = nw.build_float_curve(
-        nw.new_node(
-            Nodes.NoiseTexture, [position], input_kwargs={"Scale": uniform(10, 25)}
-        ),
+        noise,
         [(0, uniform(0, 0.2)), (1, uniform(0.4, 0.7))],
     )
     color_hsv = color_hsv or colors.metal_hsv()
@@ -29,7 +30,21 @@ def shader_metal(nw: NodeWrangler, color_hsv=None, **kwargs):
             "Roughness": roughness,
         },
     )
-    nw.new_node(Nodes.MaterialOutput, input_kwargs={"Surface": principled_bsdf})
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={"Scale": uniform(80, 150), "Detail": uniform(6, 10)},
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], uniform(0.002, 0.006)),
+            "Scale": uniform(0.3, 0.7),
+        },
+    )
+    nw.new_node(
+        Nodes.MaterialOutput,
+        input_kwargs={"Surface": principled_bsdf, "Displacement": displacement},
+    )
 
 
 class MetalBasic:

@@ -4,6 +4,12 @@
 # Authors: Alexander Raistrick
 
 import infinigen.assets.static_assets as static_assets
+from infinigen.assets.crack_plane import CrackPlaneFactory
+from infinigen.assets.paint_peel_plane import PaintPeelPlaneFactory
+from infinigen.assets.spalling_plane import SpallingPlaneFactory, SpallingPlugPlaneFactory
+from infinigen.assets.wall_bubble_plane import WallBubblePlaneFactory
+# from infinigen.assets.weak_leak_stain_plane import WeakLeakStainPlaneFactory  # commented out
+from infinigen.assets.open_wiring_plane import OpenWiringPlaneFactory
 from infinigen.assets.objects import (
     appliances,
     bathroom,
@@ -150,7 +156,7 @@ def home_asset_usage():
 
     used_as[Semantics.LoungeSeating] = {
         seating.SofaFactory,
-        # static_assets.StaticSofaFactory,
+        static_assets.StaticSofaFactory,
         seating.ArmChairFactory,
     }
 
@@ -187,7 +193,7 @@ def home_asset_usage():
             bathroom.ToiletFactory,
             bathroom.BathtubFactory,
             seating.SofaFactory,
-            # static_assets.StaticSofaFactory,
+            static_assets.StaticSofaFactory,
             shelves.TVStandFactory,
         },
     )
@@ -198,6 +204,19 @@ def home_asset_usage():
         wall_decorations.WallArtFactory,
         wall_decorations.MirrorFactory,
         wall_decorations.BalloonFactory,
+        static_assets.StaticACFactory,
+        static_assets.StaticWallPlugFactory,
+        static_assets.StaticFaucetFactory,
+    }
+
+    used_as[Semantics.Defects] = {
+        CrackPlaneFactory,
+        PaintPeelPlaneFactory,
+        SpallingPlaneFactory,
+        SpallingPlugPlaneFactory,
+        WallBubblePlaneFactory,
+        # WeakLeakStainPlaneFactory,  # commented out
+        OpenWiringPlaneFactory,
     }
 
     used_as[Semantics.Door] = {
@@ -228,6 +247,7 @@ def home_asset_usage():
         used_as[Semantics.Door],
         used_as[Semantics.Window],
         used_as[Semantics.WallDecoration],
+        used_as[Semantics.Defects],
         used_as[Semantics.HandheldItem],
         used_as[Semantics.Lighting],
         {
@@ -245,6 +265,13 @@ def home_asset_usage():
     # TODO be move outside of the semantics heirarchy and into separate AssetFactory.metadata classvar
 
     used_as[Semantics.RealPlaceholder] = {
+        CrackPlaneFactory,  # use tagged placeholder directly (bbox path loses face tags)
+        PaintPeelPlaneFactory,
+        SpallingPlaneFactory,
+        SpallingPlugPlaneFactory,
+        WallBubblePlaneFactory,
+        # WeakLeakStainPlaneFactory,  # commented out
+        OpenWiringPlaneFactory,
         appliances.MonitorFactory,
         appliances.TVFactory,
         bathroom.BathroomSinkFactory,

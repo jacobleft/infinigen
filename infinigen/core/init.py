@@ -225,10 +225,15 @@ def configure_render_cycles(
     )
     bpy.context.scene.cycles.time_limit = time_limit
     bpy.context.scene.cycles.film_exposure = exposure
+
+    # Volume settings
     bpy.context.scene.cycles.volume_step_rate = 0.1
     bpy.context.scene.cycles.volume_preview_step_rate = 0.1
     bpy.context.scene.cycles.volume_max_steps = 32
     bpy.context.scene.cycles.volume_bounces = 4
+
+    # Light path settings
+    bpy.context.scene.cycles.transparent_bounces = 1024
 
     # Enable persistent data when rendering multiple frames
     frame_start = bpy.context.scene.frame_start
@@ -265,9 +270,9 @@ def configure_cycles_devices(use_gpu=True):
         bpy.context.scene.cycles.device = "CPU"
         return
 
-    bpy.context.preferences.addons[
-        "cycles"
-    ].preferences.compute_device_type = use_device_type
+    bpy.context.preferences.addons["cycles"].preferences.compute_device_type = (
+        use_device_type
+    )
     use_devices = [d for d in prefs.devices if d.type == use_device_type]
 
     logger.info(f"Cycles will use {use_device_type=}, {len(use_devices)=}")

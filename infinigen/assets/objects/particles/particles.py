@@ -3,7 +3,6 @@
 
 # Authors: Hei Law, Alexander Raistrick
 
-# ruff: noqa: I001
 
 import bpy
 from numpy.random import normal as N

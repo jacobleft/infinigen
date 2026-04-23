@@ -21,9 +21,25 @@ def shader_black(nw: NodeWrangler):
         Nodes.PrincipledBSDF, input_kwargs={"Base Color": color}
     )
 
+    disp_noise = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": U(80, 140),
+            "Detail": U(6, 10),
+            "Distortion": U(0.5, 2),
+        },
+    )
+    displacement = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(disp_noise.outputs["Fac"], U(0.0015, 0.004)),
+            "Scale": U(0.25, 0.5),
+        },
+    )
+
     material_output = nw.new_node(
         Nodes.MaterialOutput,
-        input_kwargs={"Surface": principled_bsdf},
+        input_kwargs={"Surface": principled_bsdf, "Displacement": displacement},
         attrs={"is_active_output": True},
     )
 

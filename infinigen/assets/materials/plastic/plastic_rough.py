@@ -75,7 +75,7 @@ def nodegroup_plastics(nw: NodeWrangler):
 
     multiply_3 = nw.new_node(
         Nodes.Math,
-        input_kwargs={0: multiply_2, 1: 0.0030},
+        input_kwargs={0: multiply_2, 1: uniform(0.004, 0.006)},
         attrs={"operation": "MULTIPLY"},
     )
 
@@ -93,6 +93,7 @@ def shader_rough_plastic(
     roughness=None,
     seed=None,
     clear=False,
+    displacement_scale=1.0,
     **kwargs,
 ):
     # Code generated using version 2.6.4 of the node_transpiler
@@ -120,7 +121,11 @@ def shader_rough_plastic(
 
     displacement = nw.new_node(
         "ShaderNodeDisplacement",
-        input_kwargs={"Height": group.outputs["Displacement"], "Midlevel": 0.0000},
+        input_kwargs={
+            "Height": group.outputs["Displacement"],
+            "Midlevel": 0.0000,
+            "Scale": displacement_scale,
+        },
     )
 
     material_output = nw.new_node(
@@ -133,8 +138,8 @@ def shader_rough_plastic(
 class PlasticRough:
     shader = shader_rough_plastic
 
-    def generate(self, **kwargs):
-        return surface.shaderfunc_to_material(shader_rough_plastic, **kwargs)
+    def generate(self):
+        return surface.shaderfunc_to_material(shader_rough_plastic)
 
     def apply(self, obj, selection=None, **kwargs):
         common.apply(obj, shader_rough_plastic, selection, **kwargs)

@@ -107,17 +107,36 @@ def mix_shader(nw, base_shader, offset, rotations, mortar, alternating, selectio
         )
     for node in nw.find(Nodes.TextureCoord)[1:] + nw.find(Nodes.NewGeometry):
         surface_utils.perturb_coordinates(nw, node, offset, rotation)
-    disp = nw.add(
-        disp,
-        nw.new_node(
-            Nodes.Displacement,
-            input_kwargs={
-                "Height": nw.scalar_multiply(mortar, -uniform(0.01, 0.02)),
-                "Midlevel": 0.0,
-                "Scale": 1.0,
-            },
-        ),
+    mortar_disp = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(mortar, -uniform(0.016, 0.032)),
+            "Midlevel": 0.0,
+            "Scale": 1.0,
+        },
     )
+    noise_floor = nw.new_node(
+        Nodes.NoiseTexture,
+        input_kwargs={
+            "Scale": uniform(50, 120),
+            "Detail": uniform(6, 12),
+            "Distortion": uniform(1, 3),
+        },
+    )
+    noise_disp = nw.new_node(
+        Nodes.Displacement,
+        input_kwargs={
+            "Height": nw.scalar_multiply(
+                noise_floor.outputs["Fac"], uniform(0.005, 0.016)
+            ),
+            "Midlevel": 0.0,
+            "Scale": 1.0,
+        },
+    )
+    if disp is not None:
+        disp = nw.add(disp, mortar_disp, noise_disp)
+    else:
+        disp = nw.add(mortar_disp, noise_disp)
     nw.new_node(
         Nodes.MaterialOutput, input_kwargs={"Surface": shader, "Displacement": disp}
     )
